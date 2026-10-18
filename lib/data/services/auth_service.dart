@@ -169,45 +169,9 @@ class AuthService {
       developer.log('Fallo Edge Function security login: $e', name: 'AuthService');
     }
 
-    // 2. Respaldo directo a la tabla persona de Supabase
-    try {
-      final uri = Uri.parse('$_supabaseUrl/rest/v1/persona?dni=eq.$cleanDni&select=*');
-      final response = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        if (data.isEmpty) {
-          return AuthResult(success: false, errorMessage: 'DNI no encontrado en el sistema.');
-        }
-
-        final user = data.first as Map<String, dynamic>;
-        final savedPass = (user['password_hash'] ?? user['pin_hash'] ?? '').toString();
-
-        if (cleanPassword == savedPass || cleanPassword == '12345678') {
-          final nombres = (user['nombres'] ?? '').toString().trim();
-          final apellidos = (user['apellidos'] ?? '').toString().trim();
-          final fullName = '$nombres $apellidos'.trim();
-          final displayName = fullName.isNotEmpty ? fullName : (nombres.isNotEmpty ? nombres : 'Ciudadano');
-          final idPersona = int.tryParse(user['id_persona']?.toString() ?? '');
-
-          await SessionService.saveSession(
-            dni: user['dni']?.toString() ?? cleanDni,
-            name: displayName,
-            phone: user['telefono']?.toString() ?? '+51 999 999 999',
-            secretPin: user['pin_hash']?.toString() ?? '1234',
-            jwtToken: 'jwt_offline_${DateTime.now().millisecondsSinceEpoch}',
-            idPersona: idPersona,
-          );
-          return AuthResult(success: true, userData: user);
-        } else {
-          return AuthResult(success: false, errorMessage: 'Contraseña incorrecta.');
-        }
-      }
-    } catch (e) {
-      developer.log('Error de respaldo en login: $e', name: 'AuthService');
-    }
-
-    // Respaldo de prueba offline
+    // Respaldo de prueba offline (solo cuenta demo; la validación real es por
+    // la Edge Function `security`, que usa bcrypt. No se lee la tabla persona
+    // directamente desde el cliente.)
     if (cleanDni == '12345678' && cleanPassword == '12345678') {
       await SessionService.saveSession(
         dni: cleanDni,
@@ -289,20 +253,6 @@ class AuthService {
         final user = data['user'] as Map<String, dynamic>?;
         final idPersona = user?['id_persona'] != null ? int.tryParse(user!['id_persona'].toString()) : null;
 
-        // Asegurar que nombres y apellidos queden correctamente separados en la tabla persona
-        try {
-          await http.patch(
-            Uri.parse('$_supabaseUrl/rest/v1/persona?dni=eq.$cleanDni'),
-            headers: _headers,
-            body: jsonEncode({
-              'nombres': cleanFirstName,
-              'apellidos': cleanLastName,
-            }),
-          ).timeout(const Duration(seconds: 4));
-        } catch (e) {
-          developer.log('Error actualizando nombres y apellidos separados en persona: $e', name: 'AuthService');
-        }
-
         await SessionService.saveSession(
           dni: cleanDni,
           name: fullName,
@@ -319,50 +269,6 @@ class AuthService {
       }
     } catch (e) {
       developer.log('Fallo Edge Function security register: $e', name: 'AuthService');
-    }
-
-    // 2. Respaldo directo a la tabla persona
-    try {
-      final insertUri = Uri.parse('$_supabaseUrl/rest/v1/persona');
-      final insertRes = await http
-          .post(
-            insertUri,
-            headers: {
-              ..._headers,
-              'Prefer': 'return=representation',
-            },
-            body: jsonEncode({
-              'dni': cleanDni,
-              'nombres': cleanFirstName,
-              'apellidos': cleanLastName,
-              'telefono': cleanPhone,
-              'password_hash': cleanPassword,
-              'pin_hash': cleanPin,
-            }),
-          )
-          .timeout(const Duration(seconds: 6));
-
-      if (insertRes.statusCode == 201 || insertRes.statusCode == 200) {
-        int? idPersona;
-        try {
-          final List<dynamic> inserted = jsonDecode(insertRes.body);
-          if (inserted.isNotEmpty) {
-            idPersona = int.tryParse(inserted.first['id_persona']?.toString() ?? '');
-          }
-        } catch (_) {}
-
-        await SessionService.saveSession(
-          dni: cleanDni,
-          name: fullName,
-          phone: cleanPhone,
-          secretPin: cleanPin,
-          jwtToken: 'jwt_offline_${DateTime.now().millisecondsSinceEpoch}',
-          idPersona: idPersona,
-        );
-        return AuthResult(success: true);
-      }
-    } catch (e) {
-      developer.log('Error de respaldo en register: $e', name: 'AuthService');
     }
 
     return AuthResult(success: false, errorMessage: 'Fallo de conexión al registrar. Intente nuevamente.');
@@ -382,23 +288,31 @@ class AuthService {
     }
   }
 
-  /// Busca un usuario registrado por su DNI para recuperar contraseña o verificar cuenta
+  /// Busca un usuario registrado por su DNI para recuperar contraseña o verificar cuenta.
+  /// Va por la Edge Function `security` (find-user): no expone password_hash y
+  /// funciona con el RLS de persona cerrado al rol anon.
   static Future<Map<String, dynamic>?> findUserByDni(String dni) async {
     final cleanDni = dni.trim();
     if (cleanDni.isEmpty) return null;
 
     try {
-      final uri = Uri.parse('$_supabaseUrl/rest/v1/persona?dni=eq.$cleanDni&select=*');
-      final response = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 5));
+      final response = await http
+          .post(
+            Uri.parse('$_securityFunctionUrl?action=find-user'),
+            headers: _headers,
+            body: jsonEncode({'dni': cleanDni}),
+          )
+          .timeout(const Duration(seconds: 6));
 
       if (response.statusCode == 200) {
-        final List<dynamic> data = jsonDecode(response.body);
-        if (data.isNotEmpty) {
-          return data.first as Map<String, dynamic>;
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic> && data['success'] == true) {
+          final user = data['user'];
+          if (user is Map<String, dynamic>) return user;
         }
       }
     } catch (e) {
-      developer.log('Error buscando usuario por DNI en Supabase: $e', name: 'AuthService');
+      developer.log('Error buscando usuario por DNI vía Edge Function: $e', name: 'AuthService');
     }
 
     // Fallback: verificar sesión actual si coincide
@@ -472,23 +386,18 @@ class AuthService {
           '⏱️ Válido por 5 minutos.\n'
           '⚠️ Por tu seguridad, no compartas este código con nadie.';
 
-      final greenResponse = await http.post(
-        Uri.parse(
-          'https://7105.api.greenapi.com/waInstance710522731795/sendMessage/1d98a458d1a64672abcff255236d807432183678856b42cfba',
-        ),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'chatId': '$normalizedRecipient@c.us',
-          'message': message,
-        }),
-      ).timeout(const Duration(seconds: 6));
+      final sent = await WhatsAppApiService.sendTextViaEdge(
+        chatId: '$normalizedRecipient@c.us',
+        message: message,
+        timeout: const Duration(seconds: 6),
+      );
 
       developer.log(
-        'OTP ($code) enviado a WhatsApp $normalizedRecipient: status=${greenResponse.statusCode}',
+        'OTP ($code) enviado a WhatsApp $normalizedRecipient: ok=$sent',
         name: 'AuthService',
       );
     } catch (e) {
-      developer.log('Error enviando WhatsApp directo vía Green API: $e', name: 'AuthService');
+      developer.log('Error enviando WhatsApp vía Edge Function: $e', name: 'AuthService');
     }
 
     return AuthResult(success: true);
@@ -550,48 +459,38 @@ class AuthService {
       );
     }
 
-    bool updated = false;
-
-    // 1. Intentar actualizar en Supabase tabla persona
+    // 1. Intentar actualizar vía Edge Function de seguridad (bcrypt)
     try {
-      final patchUri = Uri.parse('$_supabaseUrl/rest/v1/persona?dni=eq.$cleanDni');
-      final patchRes = await http.patch(
-        patchUri,
-        headers: {
-          ..._headers,
-          'Prefer': 'return=representation',
-        },
-        body: jsonEncode({
-          'password_hash': cleanPassword,
-        }),
-      ).timeout(const Duration(seconds: 6));
-
-      if (patchRes.statusCode == 200 || patchRes.statusCode == 204) {
-        updated = true;
-      }
-    } catch (e) {
-      developer.log('Error actualizando contraseña en Supabase: $e', name: 'AuthService');
-    }
-
-    // 2. Intentar Edge Function de seguridad si existe
-    try {
-      await http.post(
+      final response = await http.post(
         Uri.parse('$_securityFunctionUrl?action=reset-password'),
         headers: _headers,
         body: jsonEncode({
           'dni': cleanDni,
           'password': cleanPassword,
         }),
-      ).timeout(const Duration(seconds: 4));
-    } catch (_) {}
+      ).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        // Respaldo local si la sesión actual coincide
+        final currentSession = await SessionService.getUserData();
+        if (currentSession['dni'] == cleanDni) {
+          return AuthResult(success: true);
+        }
+        return AuthResult(success: true);
+      } else {
+        final data = jsonDecode(response.body);
+        return AuthResult(
+          success: false,
+          errorMessage: data['error'] ?? 'No se pudo actualizar la contraseña.',
+        );
+      }
+    } catch (e) {
+      developer.log('Error actualizando contraseña vía Edge Function: $e', name: 'AuthService');
+    }
 
     // Respaldo local si la sesión actual coincide
     final currentSession = await SessionService.getUserData();
     if (currentSession['dni'] == cleanDni) {
-      updated = true;
-    }
-
-    if (updated || cleanDni == '12345678') {
       return AuthResult(success: true);
     }
 
@@ -616,21 +515,21 @@ class AuthService {
     // Guardar en SessionService localmente
     await SessionService.setSecretPin(cleanPin);
 
-    // Actualizar en Supabase
+    // Actualizar en Supabase vía Edge Function (bcrypt)
     try {
-      final patchUri = Uri.parse('$_supabaseUrl/rest/v1/persona?dni=eq.$cleanDni');
-      await http.patch(
-        patchUri,
-        headers: {
-          ..._headers,
-          'Prefer': 'return=representation',
-        },
-        body: jsonEncode({
-          'pin_hash': cleanPin,
-        }),
-      ).timeout(const Duration(seconds: 5));
+      final response = await http
+          .post(
+            Uri.parse('$_securityFunctionUrl?action=update-pin'),
+            headers: _headers,
+            body: jsonEncode({
+              'dni': cleanDni,
+              'pin': cleanPin,
+            }),
+          )
+          .timeout(const Duration(seconds: 6));
+      return response.statusCode == 200;
     } catch (e) {
-      developer.log('Error actualizando PIN en Supabase: $e', name: 'AuthService');
+      developer.log('Error actualizando PIN vía Edge Function: $e', name: 'AuthService');
     }
 
     return true;

@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- REQUERIDO para mantener fijación GPS con pantalla apagada / app en segundo plano (Android 10+).
+         Sin este permiso el SO deja de entregar ubicación al pasar a background, lo que causaba
+         coordenadas incorrectas o fallback a la ciudad por defecto en los disparos por botón 3x / sensor. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -45,13 +49,15 @@
             </intent-filter>
         </activity>
 
-        <!-- Servicio en Primer Plano Persistente para monitoreo de botón 3x y notificación de rastreo -->
+        <!-- Servicio en Primer Plano Persistente: monitoreo de botón 3x + fijación GPS en segundo plano + rastreo en vivo.
+             El tipo "location" es OBLIGATORIO para acceder a ubicación con la app en background (Android 14+).
+             "specialUse" se conserva para la semántica de monitoreo de botón de emergencia. -->
         <service
             android:name=".EmergencyForegroundService"
             android:enabled="true"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="location|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Emergency power button trigger and live victim tracking protection" />

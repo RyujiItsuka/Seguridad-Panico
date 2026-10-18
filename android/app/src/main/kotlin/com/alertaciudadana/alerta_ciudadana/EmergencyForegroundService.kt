@@ -118,9 +118,49 @@ class EmergencyForegroundService : Service() {
         const val ACTION_START_GUARD = "ACTION_START_GUARD"
         const val ACTION_STOP_GUARD = "ACTION_STOP_GUARD"
         const val ACTION_SET_TRACKING = "ACTION_SET_TRACKING"
+        const val ACTION_TRIGGER_EMERGENCY = "ACTION_TRIGGER_EMERGENCY"
+        const val ACTION_DISPATCH_NOW = "ACTION_DISPATCH_NOW"
         const val EXTRA_IS_TRACKING = "EXTRA_IS_TRACKING"
+        const val EXTRA_ALERT_TYPE = "EXTRA_ALERT_TYPE"
+        const val EXTRA_SOURCE = "EXTRA_SOURCE"
 
         var isServiceRunning = false
+
+        // Punto de entrada ÚNICO para disparar una emergencia desde cualquier origen
+        // (botón de encendido 3x, sensor, o botón de la UI). Garantiza UN solo despacho
+        // y UN solo id_reporte, sin importar quién lo inicie.
+        fun triggerEmergency(context: Context, alertType: String, source: String) {
+            try {
+                val intent = Intent(context, EmergencyForegroundService::class.java).apply {
+                    action = ACTION_TRIGGER_EMERGENCY
+                    putExtra(EXTRA_ALERT_TYPE, alertType)
+                    putExtra(EXTRA_SOURCE, source)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("EmergencyService", "No se pudo iniciar flujo de emergencia: ${e.message}")
+            }
+        }
+
+        // Salta la cuenta regresiva y despacha inmediatamente (botón "ENVIAR AHORA").
+        fun dispatchNow(context: Context) {
+            try {
+                val intent = Intent(context, EmergencyForegroundService::class.java).apply {
+                    action = ACTION_DISPATCH_NOW
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("EmergencyService", "No se pudo despachar inmediatamente: ${e.message}")
+            }
+        }
 
         var activeCountdownTimer: CountDownTimer? = null
         var isEmergencyActive: Boolean = false
@@ -347,6 +387,29 @@ class EmergencyForegroundService : Service() {
                 val notification = buildCurrentNotification()
                 val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 manager?.notify(NOTIFICATION_ID, notification)
+                return START_STICKY
+            }
+            ACTION_TRIGGER_EMERGENCY -> {
+                // Disparo iniciado desde la UI de Flutter: reutiliza el MISMO flujo nativo
+                // (GPS + cuenta regresiva + despacho + rastreo). Un solo dueño, un solo reporte.
+                val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: "ROBO"
+                val source = intent.getStringExtra(EXTRA_SOURCE) ?: "ui_button"
+                try {
+                    val notification = buildCurrentNotification()
+                    startForeground(NOTIFICATION_ID, notification)
+                } catch (_: Exception) {}
+                startEmergencyFlow(source, alertType, "Despacho desde la aplicación ($source)")
+                return START_STICKY
+            }
+            ACTION_DISPATCH_NOW -> {
+                // "ENVIAR AHORA": salta la cuenta restante y despacha de inmediato.
+                val shouldDispatch = isEmergencyActive && !isEmergencyDispatched
+                activeCountdownTimer?.cancel()
+                activeCountdownTimer = null
+                isEmergencyActive = false
+                if (shouldDispatch) {
+                    dispatchEmergencyAlertFromService(currentEmergencySource, currentEmergencyAlertType)
+                }
                 return START_STICKY
             }
         }
@@ -770,7 +833,9 @@ class EmergencyForegroundService : Service() {
             locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             locationListener = object : LocationListener {
                 override fun onLocationChanged(location: Location) {
-                    if (activeLocation == null || location.accuracy <= (activeLocation!!.accuracy + 5) || location.time > activeLocation!!.time + 10000) {
+                    // Solo acepta la nueva posición si es genuinamente MEJOR.
+                    // Evita que un fix de red/celda pise a uno satelital preciso.
+                    if (isBetterLocation(activeLocation, location)) {
                         activeLocation = location
                     }
                 }
@@ -799,6 +864,52 @@ class EmergencyForegroundService : Service() {
         } catch (_: Exception) {}
         locationListener = null
         locationManager = null
+    }
+
+    // Nivel de confianza del proveedor de ubicación. GPS (satélite) es la máxima autoridad;
+    // FUSED lo resuelve el SO y suele respaldarse en satélite; NETWORK es celda/Wi-Fi (imprecisa).
+    private fun providerTrust(provider: String?): Int = when (provider) {
+        LocationManager.GPS_PROVIDER -> 3
+        LocationManager.FUSED_PROVIDER -> 2
+        LocationManager.NETWORK_PROVIDER -> 1
+        else -> 0
+    }
+
+    // Evalúa si `candidate` debe reemplazar a `current` como la mejor posición conocida.
+    //
+    // BUG QUE CORRIGE: la lógica anterior usaba `location.time > current.time + 10000`, lo que
+    // permitía que un fix de RED (torre celular, ±500–2000m) más reciente PISARA un fix GPS
+    // preciso (±8m). Esa era la causa directa de los saltos a antenas lejanas en los disparos
+    // por botón 3x / sensor con pantalla apagada.
+    private fun isBetterLocation(current: Location?, candidate: Location?): Boolean {
+        if (candidate == null) return false
+        if (current == null) return true
+
+        val candTrust = providerTrust(candidate.provider)
+        val curTrust = providerTrust(current.provider)
+
+        // Regla de oro: jamás degradar de una fuente de mayor confianza a una menor,
+        // salvo que el candidato sea drásticamente más preciso (>100m mejor).
+        if (candTrust < curTrust) {
+            return candidate.accuracy < (current.accuracy - 100f)
+        }
+
+        // Misma o mayor confianza: elegir por precisión con una tolerancia de 5m.
+        val accuracyDelta = candidate.accuracy - current.accuracy
+        if (accuracyDelta <= 5f) return true
+
+        // Si el actual está viejo (>20s) y el candidato tiene precisión razonable, actualizar.
+        val ageMs = candidate.time - current.time
+        if (ageMs > 20000L && candidate.accuracy <= 50f) return true
+
+        return false
+    }
+
+    // Devuelve true si `activeLocation` proviene del satélite (o fused satelital) con precisión usable.
+    private fun hasSatelliteFix(): Boolean {
+        val loc = activeLocation ?: return false
+        val trust = providerTrust(loc.provider)
+        return trust >= 2 && loc.hasAccuracy() && loc.accuracy <= 50f
     }
 
     private fun forceHighAccuracyGpsLock() {
@@ -868,7 +979,8 @@ class EmergencyForegroundService : Service() {
             // 3. Suscribir listeners de máxima prioridad (0ms, 0m) en todos los proveedores disponibles
             val listener = object : LocationListener {
                 override fun onLocationChanged(loc: Location) {
-                    if (activeLocation == null || loc.accuracy <= (activeLocation!!.accuracy + 15f) || loc.accuracy <= 40f) {
+                    // Acepta la posición solo si mejora a la actual (no deja que la red pise al GPS)
+                    if (isBetterLocation(activeLocation, loc)) {
                         activeLocation = loc
                     }
                     android.util.Log.i("EmergencyService", "🎯 Fix GPS activo fijado [${loc.provider}]: Lat ${loc.latitude}, Lon ${loc.longitude}, Precisión: ±${loc.accuracy}m")
@@ -1115,30 +1227,26 @@ class EmergencyForegroundService : Service() {
             var nativeSuccess = false
             var createdReportId: Long? = null
             try {
-                // 1. Obtener última y mejor ubicación GPS (manteniendo la fijación satelital activa)
+                // 1. Obtener la MEJOR ubicación GPS disponible (priorizando satélite sobre red).
+                // NOTA: `activeLocation` ya viene actualizándose durante la cuenta regresiva de 5s
+                // gracias a forceHighAccuracyGpsLock() + registerLocationListener(). Aquí solo
+                // completamos con getLastKnownLocation de cada proveedor eligiendo el MEJOR fix,
+                // sin bloquear el hilo principal (evita ANR y garantiza despacho inmediato).
                 var bestLocation: Location? = activeLocation
                 val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-                if (bestLocation == null || (System.currentTimeMillis() - bestLocation.time > 15000)) {
-                    try {
-                        val availableProviders = lm?.getProviders(true) ?: emptyList<String>()
-                        var newestCandidate: Location? = null
-                        for (prov in availableProviders) {
-                            try {
-                                val loc = lm?.getLastKnownLocation(prov)
-                                if (loc != null) {
-                                    if (newestCandidate == null || loc.time > newestCandidate.time) {
-                                        newestCandidate = loc
-                                    }
-                                }
-                            } catch (_: SecurityException) {} catch (_: Exception) {}
-                        }
-                        if (newestCandidate != null) {
-                            if (bestLocation == null || newestCandidate.time > bestLocation.time) {
-                                bestLocation = newestCandidate
+
+                // Revisar getLastKnownLocation de cada proveedor eligiendo el MEJOR, no el más nuevo
+                try {
+                    val availableProviders = lm?.getProviders(true) ?: emptyList<String>()
+                    for (prov in availableProviders) {
+                        try {
+                            val loc = lm?.getLastKnownLocation(prov)
+                            if (loc != null && isBetterLocation(bestLocation, loc)) {
+                                bestLocation = loc
                             }
-                        }
-                    } catch (_: Exception) {}
-                }
+                        } catch (_: SecurityException) {} catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
 
                 val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                 val cachedRealLat = try {
@@ -1158,58 +1266,81 @@ class EmergencyForegroundService : Service() {
                     }
                 } catch (_: Exception) { null }
                 val cachedRealAddress = try { prefs.getString("flutter.last_known_real_address", null) } catch (_: Exception) { null }
+                val cachedRealTime = try { prefs.getLong("flutter.last_known_real_time", 0L) } catch (_: Exception) { 0L }
 
-                // REGLA FUNDAMENTAL DE PRECISIÓN:
-                // Si bestLocation proviene de una celda celular (accuracy > 70m) y disponemos de la
-                // última ubicación satelital verificada del usuario en SharedPreferences, se prioriza
-                // la posición satelital real del ciudadano para evitar saltos falsos a antenas lejanas (ej. Pedemonte).
+                // REGLA FUNDAMENTAL DE PRECISIÓN + DETECCIÓN DE CALIDAD:
+                //  - Fix satelital usable (≤70m)  -> usarlo directo (calidad SATELITAL).
+                //  - Sin fix satelital pero con caché satelital reciente (<90s) -> usar caché (calidad SATELITAL CACHÉ).
+                //  - Solo fix de red (>70m)        -> último recurso, marcado como RED APROXIMADA.
+                //  - Nada disponible               -> fallback Pisco/Ica marcado explícitamente como SIN GPS,
+                //    para que la Central sepa que las coordenadas NO son reales.
                 val lat: Double
                 val lon: Double
-                if (bestLocation != null && bestLocation.accuracy <= 70f) {
-                    lat = bestLocation.latitude
-                    lon = bestLocation.longitude
-                } else if (cachedRealLat != null && cachedRealLon != null) {
-                    lat = cachedRealLat
-                    lon = cachedRealLon
-                    android.util.Log.i("EmergencyService", "🛰️ Descartando celda celular imprecisa (>70m). Usando última ubicación satelital verificada: Lat $lat, Lon $lon")
-                } else if (bestLocation != null) {
-                    lat = bestLocation.latitude
-                    lon = bestLocation.longitude
-                } else {
-                    lat = -13.71450
-                    lon = -76.20320
+                val locationQuality: String
+                val cacheAgeMs = System.currentTimeMillis() - cachedRealTime
+                val cacheIsFreshSatellite = cachedRealLat != null && cachedRealLon != null && cacheAgeMs in 0..90_000L
+
+                when {
+                    bestLocation != null && bestLocation.accuracy <= 70f && hasSatelliteFix() -> {
+                        lat = bestLocation.latitude
+                        lon = bestLocation.longitude
+                        locationQuality = "SATELITAL (±${String.format(Locale.US, "%.1f", bestLocation.accuracy)}m)"
+                    }
+                    cacheIsFreshSatellite -> {
+                        lat = cachedRealLat!!
+                        lon = cachedRealLon!!
+                        locationQuality = "SATELITAL EN CACHÉ (±${String.format(Locale.US, "%.0f", cacheAgeMs / 1000.0)}s)"
+                        android.util.Log.i("EmergencyService", "🛰️ Usando última ubicación satelital verificada en caché: Lat $lat, Lon $lon")
+                    }
+                    bestLocation != null -> {
+                        lat = bestLocation.latitude
+                        lon = bestLocation.longitude
+                        locationQuality = "RED APROXIMADA (±${String.format(Locale.US, "%.0f", bestLocation.accuracy)}m)"
+                    }
+                    else -> {
+                        lat = -13.71450   // Pisco, Ica — fallback declarado por el usuario
+                        lon = -76.20320
+                        locationQuality = "⚠️ SIN GPS — UBICACIÓN APROXIMADA PISCO/ICA"
+                    }
                 }
+
+                val hasRealGps = locationQuality.startsWith("SATELITAL")
 
                 // Resolver dirección y calle exacta mediante el Geocoder nativo
                 var realAddress = cachedRealAddress ?: "Pisco, Ica - Ubicación móvil"
-                val accuracyStr = if (bestLocation != null && bestLocation.hasAccuracy()) " (±${String.format(Locale.US, "%.1f", bestLocation.accuracy)}m)" else ""
-                try {
-                    if (Geocoder.isPresent()) {
-                        val geocoder = Geocoder(this, Locale("es", "PE"))
-                        @Suppress("DEPRECATION")
-                        val addresses = geocoder.getFromLocation(lat, lon, 1)
-                        if (!addresses.isNullOrEmpty()) {
-                            val addr = addresses[0]
-                            val thoroughfare = addr.thoroughfare
-                            val subThoroughfare = addr.subThoroughfare
-                            val locality = addr.locality ?: addr.subAdminArea ?: "Pisco"
-                            if (!thoroughfare.isNullOrBlank()) {
-                                realAddress = if (!subThoroughfare.isNullOrBlank()) {
-                                    "$thoroughfare $subThoroughfare, $locality$accuracyStr"
+                val accuracyStr = if (bestLocation != null && bestLocation.hasAccuracy() && hasRealGps) " (±${String.format(Locale.US, "%.1f", bestLocation.accuracy)}m)" else ""
+                if (!hasRealGps && locationQuality.startsWith("⚠️")) {
+                    // Fallback sin GPS: dejar claro en la dirección que NO es una ubicación real
+                    realAddress = "Pisco, Ica (SIN SEÑAL GPS — ubicación aproximada)"
+                } else {
+                    try {
+                        if (Geocoder.isPresent()) {
+                            val geocoder = Geocoder(this, Locale("es", "PE"))
+                            @Suppress("DEPRECATION")
+                            val addresses = geocoder.getFromLocation(lat, lon, 1)
+                            if (!addresses.isNullOrEmpty()) {
+                                val addr = addresses[0]
+                                val thoroughfare = addr.thoroughfare
+                                val subThoroughfare = addr.subThoroughfare
+                                val locality = addr.locality ?: addr.subAdminArea ?: "Pisco"
+                                if (!thoroughfare.isNullOrBlank()) {
+                                    realAddress = if (!subThoroughfare.isNullOrBlank()) {
+                                        "$thoroughfare $subThoroughfare, $locality$accuracyStr"
+                                    } else {
+                                        "$thoroughfare, $locality$accuracyStr"
+                                    }
                                 } else {
-                                    "$thoroughfare, $locality$accuracyStr"
-                                }
-                            } else {
-                                val line = addr.getAddressLine(0)
-                                if (!line.isNullOrBlank()) {
-                                    realAddress = "$line$accuracyStr"
+                                    val line = addr.getAddressLine(0)
+                                    if (!line.isNullOrBlank()) {
+                                        realAddress = "$line$accuracyStr"
+                                    }
                                 }
                             }
                         }
+                    } catch (geoErr: Exception) {
+                        android.util.Log.w("EmergencyService", "Geocoder fallback: ${geoErr.message}")
+                        realAddress = "Ubicación móvil GPS$accuracyStr"
                     }
-                } catch (geoErr: Exception) {
-                    android.util.Log.w("EmergencyService", "Geocoder fallback: ${geoErr.message}")
-                    realAddress = "Ubicación móvil GPS$accuracyStr"
                 }
 
                 try {
@@ -1255,43 +1386,63 @@ class EmergencyForegroundService : Service() {
                 val message = "$headline\n" +
                         "📍 Ubicación: $realAddress\n" +
                         "🛰️ Coordenadas: Lat $latStr, Lon $lonStr\n" +
+                        "📡 Calidad GPS: $locationQuality\n" +
                         "🗺️ Mapa: $gmapsUrl\n" +
                         "$gmapsNav\n" +
                         "⚡ Disparador: $triggerLabel\n" +
                         "🛡️ Despacho automático WhatsApp API a la Central de Video Vigilancia."
 
-                // 3. Despachar mensaje a WhatsApp vía Green-API (con timeouts explícitos y UTF-8)
+                // 3. Despachar mensaje a WhatsApp vía Edge Function `whatsapp`.
+                //    El token de Green API vive SOLO en el servidor (Deno.env);
+                //    el APK solo conoce la URL de la Edge Function. Timeout
+                //    corto + reintento (respaldo) para no dejar caer la ruta crítica.
                 try {
-                    val waUrl = URL("https://7105.api.greenapi.com/waInstance710522731795/sendMessage/1d98a458d1a64672abcff255236d807432183678856b42cfba")
-                    val conn = waUrl.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    conn.connectTimeout = 10000
-                    conn.readTimeout = 10000
-                    conn.doOutput = true
+                    val anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtdHpwcmNudGVmemt2dnptaGZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODIxNzIsImV4cCI6MjEwNjM1ODE3Mn0.x18Bh68n4ZgtNOyVPwIc01V6aL50oUaXjeXELzlWEh4"
+                    val fnUrl = URL("https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/whatsapp")
                     val jsonBody = JSONObject().apply {
+                        put("action", "sendMessage")
                         put("chatId", "51976264949@c.us")
                         put("message", message)
+                    }.toString().toByteArray(Charsets.UTF_8)
+
+                    var code = 0
+                    var resText = ""
+                    for (attempt in 1..2) {
+                        val conn = fnUrl.openConnection() as HttpURLConnection
+                        try {
+                            conn.requestMethod = "POST"
+                            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                            conn.setRequestProperty("apikey", anonKey)
+                            conn.setRequestProperty("Authorization", "Bearer $anonKey")
+                            conn.connectTimeout = 8000
+                            conn.readTimeout = 8000
+                            conn.doOutput = true
+                            conn.setFixedLengthStreamingMode(jsonBody.size)
+                            conn.outputStream.use { os ->
+                                os.write(jsonBody)
+                                os.flush()
+                            }
+                            code = conn.responseCode
+                            resText = if (code in 200..299) {
+                                conn.inputStream.bufferedReader().use { it.readText() }
+                            } else {
+                                conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                            }
+                            android.util.Log.d("EmergencyForegroundService", "Edge WhatsApp intento $attempt -> ($code): $resText")
+                            if (code in 200..299) {
+                                nativeSuccess = true
+                                break
+                            }
+                            if (code in 400..499) break // error del cliente: no reintentar
+                        } finally {
+                            conn.disconnect()
+                        }
                     }
-                    val bytes = jsonBody.toString().toByteArray(Charsets.UTF_8)
-                    conn.setFixedLengthStreamingMode(bytes.size)
-                    conn.outputStream.use { os ->
-                        os.write(bytes)
-                        os.flush()
+                    if (!nativeSuccess) {
+                        android.util.Log.w("EmergencyForegroundService", "Despacho WhatsApp fallido tras respaldo. Último código: $code $resText")
                     }
-                    val code = conn.responseCode
-                    val resText = if (code in 200..299) {
-                        conn.inputStream.bufferedReader().use { it.readText() }
-                    } else {
-                        conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-                    }
-                    android.util.Log.d("EmergencyForegroundService", "Green API Response ($code): $resText")
-                    if (code in 200..299) {
-                        nativeSuccess = true
-                    }
-                    conn.disconnect()
                 } catch (waErr: Exception) {
-                    android.util.Log.e("EmergencyForegroundService", "Green API error: ${waErr.message}", waErr)
+                    android.util.Log.e("EmergencyForegroundService", "Edge WhatsApp error: ${waErr.message}", waErr)
                 }
 
                 // 4. Registrar reporte en Supabase
@@ -1421,9 +1572,10 @@ class EmergencyForegroundService : Service() {
                 // 9. Actualizar notificación permanente de alarma a despachado
                 showDispatchedNotification(alertType)
 
-                // 10. Si MainActivity está abierta o se abre, informarle
+                // 10. Si MainActivity está abierta o se abre, informarle el ID OFICIAL del reporte
+                //     para que el rastreo en vivo use el MISMO id_reporte (evita traza partida).
                 MainActivity.instance?.runOnUiThread {
-                    MainActivity.instance?.onEmergencyDispatchedFromNative(alertType, source, nativeSuccess)
+                    MainActivity.instance?.onEmergencyDispatchedFromNative(alertType, source, nativeSuccess, createdReportId)
                 }
             } catch (fatal: Exception) {
                 android.util.Log.e("EmergencyForegroundService", "Fatal error in dispatch: ${fatal.message}", fatal)

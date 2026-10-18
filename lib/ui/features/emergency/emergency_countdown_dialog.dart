@@ -1,15 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/theme/app_theme.dart';
-import '../../../data/services/whatsapp_api_service.dart';
-import '../../../data/services/location_tracking_service.dart';
 import '../../../data/services/session_service.dart';
-import '../../../data/services/gps_location_service.dart';
 import '../../../data/services/hardware_trigger_service.dart';
 import '../../../data/services/biometric_auth_service.dart';
-import '../reports/new_report_view.dart';
 
 class EmergencyCountdownDialog extends StatefulWidget {
   final String alertType;
@@ -24,6 +19,17 @@ class EmergencyCountdownDialog extends StatefulWidget {
   });
 
   static bool _isOpen = false;
+
+  /// Permite cerrar el diálogo desde fuera cuando el servicio nativo confirma
+  /// que la alerta fue despachada (onEmergencyDispatched), sin importar quién
+  /// sea el dueño real del envío.
+  static VoidCallback? _dismissCallback;
+
+  static void dismissOpen() {
+    if (_isOpen) {
+      _dismissCallback?.call();
+    }
+  }
 
   static Future<void> show(
     BuildContext context, {
@@ -67,8 +73,6 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
   late AnimationController _pulseController;
   bool _canUseBiometrics = false;
   bool _hasTriggeredSend = false;
-  Position? _preFetchedPosition;
-  Future<Position?>? _locationFuture;
 
   @override
   void initState() {
@@ -78,20 +82,18 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
       duration: const Duration(milliseconds: 1000),
     )..repeat(reverse: true);
 
-    // Iniciar pre-fijación satelital GPS inmediatamente desde el segundo 0
-    _locationFuture = GpsLocationService.getCurrentLocation().then((pos) {
-      if (mounted && pos != null) {
-        setState(() {
-          _preFetchedPosition = pos;
-        });
-      } else {
-        _preFetchedPosition = pos;
-      }
-      return pos;
-    }).catchError((_) => null);
-
+    // El servicio nativo es el dueño de la fijación GPS y del despacho.
+    // El diálogo solo muestra la cuenta regresiva y permite cancelar.
+    EmergencyCountdownDialog._dismissCallback = _handleNativeDismiss;
     _checkBiometrics();
     _startTimer();
+  }
+
+  /// Cierra el diálogo cuando el nativo confirma que la alerta fue despachada.
+  void _handleNativeDismiss() {
+    if (!mounted) return;
+    _timer?.cancel();
+    Navigator.of(context).pop();
   }
 
   Future<void> _checkBiometrics() async {
@@ -112,122 +114,27 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
         });
       } else {
         _timer?.cancel();
-        _onAutoSend();
+        // La cuenta regresiva VISUAL terminó. El servicio nativo es quien
+        // despacha realmente; aquí solo esperamos su confirmación (llamada
+        // a EmergencyCountdownDialog.dismissOpen() desde onEmergencyDispatched).
+        if (mounted) {
+          setState(() {
+            _hasTriggeredSend = true;
+          });
+        }
       }
     });
   }
 
-  void _onAutoSend() async {
+  /// Botón "ENVIAR AHORA": salta la espera y pide al nativo despachar ya.
+  /// El diálogo se cierra cuando el nativo confirma (onEmergencyDispatched).
+  void _sendNow() {
     if (_hasTriggeredSend) return;
     _hasTriggeredSend = true;
     _timer?.cancel();
-    final parentContext = context;
-    Navigator.of(parentContext).pop();
-
-    final isRobo = widget.alertType.trim().toUpperCase() == 'ROBO';
-    final isSecuestro = widget.alertType.trim().toUpperCase() == 'SECUESTRO';
-    final hasLiveTracking = isRobo || isSecuestro;
-
-    // 1. Obtener la posición satelital (pre-fijada durante los 5 segundos de cuenta regresiva)
-    Position? position = _preFetchedPosition;
-    if (position == null && _locationFuture != null) {
-      try {
-        position = await _locationFuture!.timeout(const Duration(seconds: 2));
-      } catch (_) {}
-    }
-    position ??= await GpsLocationService.getCurrentLocation();
-
-    // 2. Si no hay GPS en vivo, usar la última ubicación real persistida por el dispositivo
-    final cached = await GpsLocationService.getCachedRealCoordinates();
-    final double lat = position?.latitude ?? (cached?['lat'] as double?) ?? -13.71450;
-    final double lon = position?.longitude ?? (cached?['lon'] as double?) ?? -76.20320;
-
-    String address = (cached?['address'] as String?) ?? 'Pisco, Ica - Ubicación móvil';
-    if (position != null) {
-      final realStreet = await GpsLocationService.getAddressFromCoordinates(lat, lon);
-      address = realStreet != null
-          ? '$realStreet (±${position.accuracy.toStringAsFixed(1)}m)'
-          : 'Ubicación móvil GPS (±${position.accuracy.toStringAsFixed(1)}m)';
-    }
-
-    // 3. Encendido instantáneo del rastreo GPS en vivo con la posición real
-    if (hasLiveTracking) {
-      final provisionalId = 'ALT-${DateTime.now().millisecondsSinceEpoch}';
-      LocationTrackingService().startTracking(
-        alertId: provisionalId,
-        initialLat: lat,
-        initialLon: lon,
-      );
-    }
-
-    if (widget.isDirectWhatsAppApi) {
-      // Envío automático vía API sin abrir el formulario ni la app de WhatsApp
-      final alertId = await WhatsAppApiService.sendAutomatedEmergencyAlert(
-        category: widget.alertType,
-        source: widget.source,
-        recipientNumber: WhatsAppApiService.defaultEmergencyRecipient,
-        lat: lat,
-        lon: lon,
-        address: address,
-      );
-
-      if (hasLiveTracking && alertId != null) {
-        LocationTrackingService().updateAlertId(alertId);
-      }
-
-      if (parentContext.mounted) {
-        showDialog(
-          context: parentContext,
-          builder: (ctx) => AlertDialog(
-            backgroundColor: AppColors.surface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: const BorderSide(color: AppColors.accentGreen, width: 1.5),
-            ),
-            title: Row(
-              children: [
-                const Icon(Icons.check_circle, color: AppColors.accentGreen, size: 24),
-                const SizedBox(width: 8),
-                Text(
-                  'Reporte Enviado',
-                  style: GoogleFonts.inter(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-            content: Text(
-              hasLiveTracking
-                  ? 'El reporte fue enviado con éxito a la Central de Video Vigilancia.\n\n🔴 SEGUIMIENTO EN VIVO ACTIVADO:\nSe inició el rastreo GPS en tiempo real para seguir tu desplazamiento.'
-                  : 'El reporte fue enviado con éxito a la Central de Video Vigilancia.',
-              style: GoogleFonts.inter(fontSize: 14, color: AppColors.textSecondary),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: Text(
-                  'ENTENDIDO',
-                  style: GoogleFonts.inter(
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.accentGreen,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      }
-    } else {
-      // Flujo opcional hacia el formulario detallado de reporte
-      if (parentContext.mounted) {
-        Navigator.of(parentContext).push(
-          MaterialPageRoute(
-            builder: (_) => NewReportView(initialCategory: widget.alertType),
-          ),
-        );
-      }
+    HardwareTriggerService().dispatchNow();
+    if (mounted) {
+      setState(() {});
     }
   }
 
@@ -274,8 +181,9 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
     }
 
     _timer?.cancel();
-    LocationTrackingService().stopTracking();
-    HardwareTriggerService().cancelEmergency();
+    // El servicio nativo se encarga de detener el rastreo y notificar el
+    // marcador de cierre (0,0) a Supabase al cancelar la emergencia.
+    await HardwareTriggerService().cancelEmergency();
     if (!mounted) return;
     Navigator.of(context).pop();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -302,8 +210,9 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
 
     if (authenticated) {
       _timer?.cancel();
-      LocationTrackingService().stopTracking();
-      HardwareTriggerService().cancelEmergency();
+      // El servicio nativo se encarga de detener el rastreo y notificar el
+      // marcador de cierre (0,0) a Supabase al cancelar la emergencia.
+      await HardwareTriggerService().cancelEmergency();
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -326,6 +235,9 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
 
   @override
   void dispose() {
+    if (identical(EmergencyCountdownDialog._dismissCallback, _handleNativeDismiss)) {
+      EmergencyCountdownDialog._dismissCallback = null;
+    }
     _timer?.cancel();
     _pinController.dispose();
     _pulseController.dispose();
@@ -584,7 +496,7 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
 
                 // Send Now Button (Outline Red)
                 OutlinedButton(
-                  onPressed: _onAutoSend,
+                  onPressed: _hasTriggeredSend ? null : _sendNow,
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(50),
                     side: const BorderSide(color: AppColors.primaryRed, width: 1.5),
@@ -593,7 +505,7 @@ class _EmergencyCountdownDialogState extends State<EmergencyCountdownDialog>
                     ),
                   ),
                   child: Text(
-                    'ENVIAR AHORA',
+                    _hasTriggeredSend ? 'DESPACHANDO…' : 'ENVIAR AHORA',
                     style: GoogleFonts.inter(
                       fontSize: 14,
                       fontWeight: FontWeight.w800,

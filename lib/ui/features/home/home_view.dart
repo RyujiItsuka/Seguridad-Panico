@@ -1,4 +1,3 @@
-import 'dart:developer' as developer;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../core/theme/app_theme.dart';
@@ -8,7 +7,6 @@ import '../../../data/services/hardware_trigger_service.dart';
 import '../../../data/services/location_tracking_service.dart';
 import '../../../data/services/session_service.dart';
 import '../../../data/services/gps_location_service.dart';
-import '../../../data/services/whatsapp_api_service.dart';
 import '../../../data/services/report_storage_service.dart';
 import '../../../data/services/biometric_auth_service.dart';
 import '../../../data/services/app_lock_service.dart';
@@ -60,13 +58,11 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
     // 1. Iniciar monitoreo continuo de sensores antirrobo (Acelerómetro y Giroscopio)
     _sensorService.startMonitoring(
       onTriggered: (reason, source) {
-        if (!mounted) return;
-        EmergencyCountdownDialog.show(
-          context,
-          alertType: 'ROBO',
-          source: 'ANTIRROBO: $reason',
-          isDirectWhatsAppApi: true,
-        );
+        // Ruta única: el SERVICIO NATIVO es el dueño del GPS, despacho y rastreo.
+        // Al invocar startEmergencyFlow, el nativo arranca su cuenta regresiva,
+        // fija el GPS y notifica a Flutter (onTriggered) para mostrar el diálogo
+        // de cancelación. Evita el doble envío y el segundo id_reporte.
+        HardwareTriggerService().startEmergencyFlow('ROBO', 'ANTIRROBO: $reason');
       },
     );
 
@@ -85,60 +81,29 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
           isDirectWhatsAppApi: true,
         );
       },
-      onEmergencyDispatched: (alertType, source, [nativeSuccess = false]) async {
+      onEmergencyDispatched: (alertType, source, nativeSuccess, reportId) async {
         if (!mounted) return;
 
         final isRobo = alertType.trim().toUpperCase() == 'ROBO';
         final isSecuestro = alertType.trim().toUpperCase() == 'SECUESTRO';
         final hasLiveTracking = isRobo || isSecuestro;
 
-        // Obtener posición satelital real o última posición real persistida
-        final position = await GpsLocationService.getCurrentLocation();
-        final cached = await GpsLocationService.getCachedRealCoordinates();
-        final double lat = position?.latitude ?? (cached?['lat'] as double?) ?? -13.71450;
-        final double lon = position?.longitude ?? (cached?['lon'] as double?) ?? -76.20320;
-        String address = (cached?['address'] as String?) ?? 'Pisco, Ica - Ubicación móvil';
-        if (position != null) {
-          final realStreet = await GpsLocationService.getAddressFromCoordinates(lat, lon);
-          address = realStreet != null
-              ? '$realStreet (±${position.accuracy.toStringAsFixed(1)}m)'
-              : 'Ubicación móvil GPS (±${position.accuracy.toStringAsFixed(1)}m)';
-        }
+        // El despacho y la transmisión los realizó el SERVICIO NATIVO.
+        // Aquí solo reflejamos el estado para la UI y usamos el id_reporte OFICIAL.
+        final String officialId =
+            reportId != null ? 'REP-$reportId' : 'ALT-${DateTime.now().millisecondsSinceEpoch}';
 
-        // ACTIVACIÓN INSTANTÁNEA del rastreo GPS en vivo con la posición real
         if (hasLiveTracking) {
-          final provisionalId = WhatsAppApiService.lastAlertId ?? 'ALT-${DateTime.now().millisecondsSinceEpoch}';
-          LocationTrackingService().startTracking(
-            alertId: provisionalId,
-            initialLat: lat,
-            initialLon: lon,
-          );
+          // Mostrar el banner de rastreo. La transmisión de puntos a Supabase
+          // la hace el servicio nativo; este servicio NO publica coordenadas.
+          LocationTrackingService().startTracking(alertId: officialId);
         }
 
-        String? dispatchedAlertId;
-        // Si la conexión en segundo plano estuvo restringida por ahorro de energía (Android Doze Mode),
-        // Flutter garantiza el despacho inmediato al despertar la app
-        if (nativeSuccess != true) {
-          developer.log('⚡ Red en segundo plano restringida: despachando alerta inmediatamente vía Flutter...', name: 'HomeView');
-          dispatchedAlertId = await WhatsAppApiService.sendAutomatedEmergencyAlert(
-            category: alertType,
-            source: (source.contains('power_button') || source.contains('button'))
-                ? 'BOTÓN DE ENCENDIDO (3+ PULSACIONES SEGUIDAS)'
-                : 'SENSOR ANTIRROBO (ARREBATO / FORCEJEO)',
-            lat: lat,
-            lon: lon,
-            address: address,
-          );
-        } else {
-          // Si el servicio nativo ya lo envió exitosamente, refrescar la lista de reportes
-          ReportStorageService.loadAllReports();
-          dispatchedAlertId = WhatsAppApiService.lastAlertId ?? 'ALT-${DateTime.now().millisecondsSinceEpoch}';
-        }
+        // Refrescar la lista de reportes (el nativo ya creó el registro en Supabase)
+        ReportStorageService.loadAllReports();
 
-        // Actualizar el alertId oficial si ya llegó la respuesta
-        if (hasLiveTracking && dispatchedAlertId != null) {
-          LocationTrackingService().updateAlertId(dispatchedAlertId);
-        }
+        // Cerrar el diálogo de cuenta regresiva si sigue abierto (el nativo confirmó)
+        EmergencyCountdownDialog.dismissOpen();
 
         if (mounted) {
           _showAlreadyDispatchedDialog(context, alertType, source);
@@ -170,12 +135,11 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
   }
 
   void _triggerDirectSosAlert() {
-    EmergencyCountdownDialog.show(
-      context,
-      alertType: 'ROBO',
-      source: 'BOTÓN ROJO PRINCIPAL',
-      isDirectWhatsAppApi: true,
-    );
+    // Ruta única: el SERVICIO NATIVO es el dueño del GPS, despacho y rastreo.
+    // Al invocar startEmergencyFlow, el nativo arranca su cuenta regresiva,
+    // fija el GPS y notifica a Flutter (onTriggered) para mostrar el diálogo
+    // de cancelación. Evita el doble envío y el segundo id_reporte.
+    HardwareTriggerService().startEmergencyFlow('ROBO', 'BOTÓN ROJO PRINCIPAL');
   }
 
   static bool _isAlreadyDispatchedDialogOpen = false;
@@ -540,12 +504,11 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
       return;
     }
 
-    EmergencyCountdownDialog.show(
-      context,
-      alertType: categoryName,
-      source: 'BOTÓN CATEGORÍA ($categoryName)',
-      isDirectWhatsAppApi: true,
-    );
+    // Ruta única: el SERVICIO NATIVO es el dueño del GPS, despacho y rastreo.
+    // El nativo arranca cuenta regresiva, fija el GPS y notifica a Flutter
+    // (onTriggered) para mostrar el diálogo de cancelación. Evita el doble
+    // envío y el segundo id_reporte.
+    HardwareTriggerService().startEmergencyFlow(categoryName, 'BOTÓN CATEGORÍA ($categoryName)');
   }
 
   @override

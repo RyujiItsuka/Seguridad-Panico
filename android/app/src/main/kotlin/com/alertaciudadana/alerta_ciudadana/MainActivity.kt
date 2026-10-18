@@ -136,6 +136,23 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(false)
                     }
                 }
+                "startEmergencyFlow" -> {
+                    // Ruta única de despacho desde la UI: el servicio nativo hace GPS,
+                    // cuenta regresiva, despacho y rastreo. Evita el doble envío.
+                    if (EmergencyForegroundService.isUserLoggedIn(this)) {
+                        val alertType = call.argument<String>("alertType") ?: "ROBO"
+                        val source = call.argument<String>("source") ?: "ui_button"
+                        EmergencyForegroundService.triggerEmergency(applicationContext, alertType, source)
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "dispatchNow" -> {
+                    // "ENVIAR AHORA": salta la cuenta regresiva nativa y despacha de inmediato.
+                    EmergencyForegroundService.dispatchNow(applicationContext)
+                    result.success(true)
+                }
                 "stopBackgroundService" -> {
                     EmergencyForegroundService.stopService(applicationContext)
                     result.success(true)
@@ -277,9 +294,17 @@ class MainActivity : FlutterFragmentActivity() {
         return true
     }
 
-    fun onEmergencyDispatchedFromNative(alertType: String, source: String, nativeSuccess: Boolean = true) {
+    fun onEmergencyDispatchedFromNative(alertType: String, source: String, nativeSuccess: Boolean = true, reportId: Long? = null) {
         runOnUiThread {
-            methodChannel?.invokeMethod("onEmergencyDispatched", mapOf("alertType" to alertType, "source" to source, "nativeSuccess" to nativeSuccess))
+            methodChannel?.invokeMethod(
+                "onEmergencyDispatched",
+                mapOf(
+                    "alertType" to alertType,
+                    "source" to source,
+                    "nativeSuccess" to nativeSuccess,
+                    "reportId" to reportId,
+                ),
+            )
         }
     }
 

@@ -122,13 +122,31 @@ class GpsLocationService {
     return null;
   }
 
-  /// Retorna la última posición en memoria como último recurso
+  /// Retorna la última posición en memoria como último recurso.
+  ///
+  /// BUG QUE CORRIGE: antes devolvía `getLastKnownPosition()` sin ningún filtro,
+  /// por lo que podía retornar un fix de horas de antigüedad o un fix de red
+  /// (torre celular) con precisión de kilómetros, que luego se usaba como si
+  /// fuera la ubicación real de la víctima.
   static Future<Position?> _getFilteredLastKnown() async {
     try {
       final pos = await Geolocator.getLastKnownPosition();
-      if (pos != null) {
-        _savePositionToCache(pos);
+      if (pos == null) return null;
+
+      final age = DateTime.now().difference(pos.timestamp);
+
+      // Descartar posiciones viejas (> 3 minutos) o imprecisas (> 200m, típico de red/celda).
+      if (age.inMinutes > 3) {
+        developer.log('Descartando posición en caché vieja (${age.inSeconds}s)', name: 'GpsLocationService');
+        return null;
       }
+      if (pos.hasAccuracy && pos.accuracy > 200) {
+        developer.log('Descartando posición en caché imprecisa (±${pos.accuracy}m, probable torre celular)', name: 'GpsLocationService');
+        return null;
+      }
+
+      developer.log('Usando última posición conocida filtrada (±${pos.accuracy}m, ${age.inSeconds}s)', name: 'GpsLocationService');
+      _savePositionToCache(pos);
       return pos;
     } catch (_) {
       return null;
@@ -180,6 +198,11 @@ class GpsLocationService {
         if (!serviceEnabled && context.mounted) {
           _showEnableGpsDialog(context);
           return false;
+        }
+        // Permiso de primer plano concedido: intentar también el de SEGUNDO PLANO
+        // ("Permitir todo el tiempo"), necesario para fijar GPS con pantalla apagada.
+        if (permission == LocationPermission.whileInUse && context.mounted) {
+          await _requestBackgroundLocation(context);
         }
         // Permiso ya concedido: pre-calentar GPS en segundo plano
         getCurrentLocation();
@@ -298,6 +321,12 @@ class GpsLocationService {
             if (!serviceEnabled && context.mounted) {
               _showEnableGpsDialog(context);
             } else {
+              // Acaba de conceder permiso de primer plano: intentar obtener también
+              // el de SEGUNDO PLANO ("Permitir todo el tiempo") para que el GPS
+              // siga fijando con la pantalla apagada durante un asalto.
+              if (permission == LocationPermission.whileInUse && context.mounted) {
+                await _requestBackgroundLocation(context);
+              }
               getCurrentLocation(); // Pre-calentar satélites
             }
             return true;
@@ -312,6 +341,122 @@ class GpsLocationService {
       developer.log('Error verificando permisos de ubicación: $e', name: 'GpsLocationService');
     }
     return false;
+  }
+
+  /// Solicita el permiso de ubicación en SEGUNDO PLANO ("Permitir todo el tiempo").
+  ///
+  /// En Android 10+ este permiso es OBLIGATORIO para seguir recibiendo fijaciones
+  /// GPS cuando la pantalla está apagada o la app pasa a segundo plano. Sin él,
+  /// el SO deja de entregar ubicación en el momento exacto de un asalto/bolsillo,
+  /// y la alerta caía a coordenadas falsas (fallback de ciudad).
+  ///
+  /// Debe llamarse DESPUÉS de tener el permiso de primer plano (whileInUse).
+  static Future<void> _requestBackgroundLocation(BuildContext context) async {
+    try {
+      if (defaultTargetPlatform != TargetPlatform.android) return;
+
+      final current = await Geolocator.checkPermission();
+      if (current == LocationPermission.always || current == LocationPermission.deniedForever) {
+        return;
+      }
+
+      if (!context.mounted) return;
+
+      // Dialogo explicativo: en Android 10+ la opción "Permitir todo el tiempo"
+      // solo aparece si el usuario entiende por qué la necesita.
+      final wantsBackground = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: AppColors.border, width: 1.2),
+          ),
+          contentPadding: const EdgeInsets.all(24),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryRed.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppColors.primaryRed.withValues(alpha: 0.35), width: 1.5),
+                ),
+                child: const Icon(
+                  Icons.location_on_rounded,
+                  color: AppColors.primaryRed,
+                  size: 34,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                'Activar ubicación en segundo plano',
+                style: GoogleFonts.inter(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Para que el rastreo satelital siga funcionando con la pantalla apagada o con la app cerrada durante un asalto, elige "PERMITIR TODO EL TIEMPO" en el siguiente mensaje del sistema.',
+                style: GoogleFonts.inter(
+                  color: AppColors.textSecondary,
+                  fontSize: 13,
+                  height: 1.45,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(
+                'Ahora no',
+                style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryRed,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 0,
+              ),
+              child: Text(
+                'CONTINUAR',
+                style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w800, letterSpacing: 0.5),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if (wantsBackground != true) return;
+      if (!context.mounted) return;
+
+      AppLockService().isSystemDialogActive = true;
+      try {
+        // En Android 10+, tras tener whileInUse, volver a solicitar permite
+        // elegir "Permitir todo el tiempo" (requiere ACCESS_BACKGROUND_LOCATION
+        // declarado en el manifest, ya agregado).
+        final upgraded = await Geolocator.requestPermission();
+        developer.log('Permiso de ubicación tras solicitar fondo: $upgraded', name: 'GpsLocationService');
+      } finally {
+        await Future.delayed(const Duration(milliseconds: 600));
+        AppLockService().isSystemDialogActive = false;
+        AppLockService().recordUserActivity();
+      }
+    } catch (e) {
+      developer.log('Error solicitando permiso de ubicación en segundo plano: $e', name: 'GpsLocationService');
+    }
   }
 
   static Widget _buildPermissionBenefit(IconData icon, String text) {

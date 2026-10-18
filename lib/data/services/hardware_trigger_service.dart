@@ -4,7 +4,7 @@ import '../../main.dart';
 import '../../ui/features/emergency/emergency_countdown_dialog.dart';
 
 typedef HardwareTriggerCallback = void Function(String source, [String? alertType]);
-typedef EmergencyDispatchedCallback = void Function(String alertType, String source, [bool nativeSuccess]);
+typedef EmergencyDispatchedCallback = void Function(String alertType, String source, bool nativeSuccess, int? reportId);
 typedef StopTrackingDialogCallback = void Function();
 
 /// Servicio que interactúa con la capa nativa de Android para:
@@ -73,8 +73,10 @@ class HardwareTriggerService {
           final String source = args?['source'] as String? ?? 'power_button_3x';
           final String alertType = args?['alertType'] as String? ?? 'ROBO';
           final bool nativeSuccess = args?['nativeSuccess'] == true;
-          developer.log('✅ ALERTA CONFIRMADA DESPACHADA DESDE SEGUNDO PLANO: $alertType (nativoOk: $nativeSuccess)', name: 'HardwareTriggerService');
-          _onEmergencyDispatched?.call(alertType, source, nativeSuccess);
+          final dynamic rawReportId = args?['reportId'];
+          final int? reportId = (rawReportId is int) ? rawReportId : null;
+          developer.log('✅ ALERTA CONFIRMADA DESPACHADA DESDE SEGUNDO PLANO: $alertType (nativoOk: $nativeSuccess, reporte: $reportId)', name: 'HardwareTriggerService');
+          _onEmergencyDispatched?.call(alertType, source, nativeSuccess, reportId);
           break;
 
         case 'onOpenStopTrackingDialog':
@@ -101,6 +103,33 @@ class HardwareTriggerService {
     }
   }
 
+  /// Solicita al servicio nativo iniciar el flujo de emergencia COMPLETO
+  /// (fijación GPS + cuenta regresiva de 5s + despacho + rastreo en vivo).
+  ///
+  /// Este es el punto de entrada ÚNICO para disparar alertas desde la UI.
+  /// El servicio nativo es el único dueño del despacho, por lo que NO hay
+  /// doble envío ni dos id_reporte distintos para la misma alerta.
+  Future<void> startEmergencyFlow(String alertType, String source) async {
+    try {
+      await _channel.invokeMethod('startEmergencyFlow', {
+        'alertType': alertType,
+        'source': source,
+      });
+    } catch (e) {
+      developer.log('Error iniciando flujo nativo de emergencia: $e', name: 'HardwareTriggerService');
+    }
+  }
+
+  /// Salta la cuenta regresiva nativa y despacha la alerta de inmediato
+  /// (botón "ENVIAR AHORA"). El nativo sigue siendo el único que envía.
+  Future<void> dispatchNow() async {
+    try {
+      await _channel.invokeMethod('dispatchNow');
+    } catch (e) {
+      developer.log('Error solicitando despacho inmediato: $e', name: 'HardwareTriggerService');
+    }
+  }
+
   /// Limpia el estado de emergencia activo para permitir nuevas activaciones
   Future<void> resetEmergencyState() async {
     try {
@@ -123,7 +152,7 @@ class HardwareTriggerService {
         if (isDispatched) {
           developer.log('🚨 ALERTA YA DESPACHADA EN SEGUNDO PLANO: $alertType ($source, nativoOk: $nativeSuccess)', name: 'HardwareTriggerService');
           Future.delayed(const Duration(milliseconds: 50), () {
-            _onEmergencyDispatched?.call(alertType, source, nativeSuccess);
+            _onEmergencyDispatched?.call(alertType, source, nativeSuccess, null);
           });
         } else {
           developer.log('🚨 DISPARO PENDIENTE AL ABRIR LA APP: $source ($alertType)', name: 'HardwareTriggerService');

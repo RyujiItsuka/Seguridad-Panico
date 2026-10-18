@@ -21,6 +21,63 @@ class WhatsAppApiService {
   /// Clave pública anónima de Supabase
   static const String supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtdHpwcmNudGVmemt2dnptaGZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODIxNzIsImV4cCI6MjEwNjM1ODE3Mn0.x18Bh68n4ZgtNOyVPwIc01V6aL50oUaXjeXELzlWEh4';
 
+  /// Edge Function que PROXÍA Green API. El token de Green API vive SOLO en el
+  /// servidor (Deno.env de esta función), nunca en el APK. Cualquier envío a
+  /// WhatsApp debe pasar por aquí.
+  static const String whatsappEdgeUrl = 'https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/whatsapp';
+
+  static Map<String, String> get _whatsappEdgeHeaders => {
+        'Content-Type': 'application/json; charset=utf-8',
+        'apikey': supabaseAnonKey,
+        'Authorization': 'Bearer $supabaseAnonKey',
+      };
+
+  /// Envía un mensaje de texto a WhatsApp a través de la Edge Function `whatsapp`.
+  ///
+  /// Devuelve `true` si la Edge Function respondió 2xx. Incluye timeout corto y
+  /// un reintento (respaldo) para no dejar caída la ruta crítica de pánico.
+  static Future<bool> sendTextViaEdge({
+    required String chatId,
+    required String message,
+    Duration timeout = const Duration(seconds: 8),
+    int attempts = 2,
+  }) async {
+    for (int attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        final res = await http
+            .post(
+              Uri.parse(whatsappEdgeUrl),
+              headers: _whatsappEdgeHeaders,
+              body: jsonEncode({
+                'action': 'sendMessage',
+                'chatId': chatId,
+                'message': message,
+              }),
+            )
+            .timeout(timeout);
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          developer.log(
+            'Mensaje despachado vía Edge Function (intento $attempt): ${res.body}',
+            name: 'WhatsAppApiService',
+          );
+          return true;
+        }
+        developer.log(
+          'Edge Function rechazó el envío (${res.statusCode}) en intento $attempt: ${res.body}',
+          name: 'WhatsAppApiService',
+        );
+        // 4xx = error del cliente (chatId/mensaje inválido): no reintentar.
+        if (res.statusCode >= 400 && res.statusCode < 500) return false;
+      } catch (e) {
+        developer.log(
+          'Fallo de red en Edge Function (intento $attempt): $e',
+          name: 'WhatsAppApiService',
+        );
+      }
+    }
+    return false;
+  }
+
   /// Normaliza el número al formato internacional para la API (51976264949)
   static String normalizeNumber(String phone) {
     final clean = phone.replaceAll(RegExp(r'\D'), '');
@@ -184,7 +241,9 @@ class WhatsAppApiService {
       citizen = await SessionService.getUserData();
     } catch (_) {}
 
-    // Despacho de fotografías de evidencia vía Green API (sendFileByUpload)
+    // Despacho de fotografías de evidencia vía Edge Function `whatsapp`
+    // (multipart -> sendFileByUpload). El token de Green API vive solo en el
+    // servidor; el APK solo conoce la URL de la Edge Function.
     bool photoDispatched = false;
     if (imagePaths != null && imagePaths.isNotEmpty) {
       for (int i = 0; i < imagePaths.length; i++) {
@@ -192,10 +251,10 @@ class WhatsAppApiService {
         final file = File(filePath);
         if (await file.exists()) {
           try {
-            final uploadUri = Uri.parse(
-              'https://7105.api.greenapi.com/waInstance710522731795/sendFileByUpload/1d98a458d1a64672abcff255236d807432183678856b42cfba',
-            );
-            final request = http.MultipartRequest('POST', uploadUri);
+            final request = http.MultipartRequest('POST', Uri.parse(whatsappEdgeUrl));
+            request.headers['apikey'] = supabaseAnonKey;
+            request.headers['Authorization'] = 'Bearer $supabaseAnonKey';
+            request.fields['action'] = 'sendFileByUpload';
             request.fields['chatId'] = '$cleanRecipient@c.us';
             request.fields['caption'] = i == 0
                 ? message
@@ -206,11 +265,11 @@ class WhatsAppApiService {
             final streamedResponse = await request.send().timeout(const Duration(seconds: 15));
             final resBody = await streamedResponse.stream.bytesToString();
             developer.log('Evidencia fotográfica #$i despachada a WhatsApp: $resBody', name: 'WhatsAppApiService');
-            if (streamedResponse.statusCode == 200) {
+            if (streamedResponse.statusCode >= 200 && streamedResponse.statusCode < 300) {
               photoDispatched = true;
             }
           } catch (photoErr) {
-            developer.log('Error enviando foto #$i vía Green API: $photoErr', name: 'WhatsAppApiService');
+            developer.log('Error enviando foto #$i vía Edge Function: $photoErr', name: 'WhatsAppApiService');
           }
         }
       }
@@ -230,34 +289,22 @@ class WhatsAppApiService {
       }
     }
 
-    // 1. Despacho directo a WhatsApp vía Green API oficial (sin duplicar reportes en la base de datos)
-    try {
-      final cloudResponse = await http
-          .post(
-            Uri.parse(
-              'https://7105.api.greenapi.com/waInstance710522731795/sendMessage/1d98a458d1a64672abcff255236d807432183678856b42cfba',
-            ),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'chatId': '$cleanRecipient@c.us',
-              'message': message,
-            }),
-          )
-          .timeout(const Duration(seconds: 8));
-
-      if (cloudResponse.statusCode == 200) {
-        if (dbReportId != null) {
-          ReportStorageService.markReportAsSent(dbReportId);
-        }
-        developer.log(
-          'Alerta despachada con éxito vía Green API a WhatsApp: ${cloudResponse.body}',
-          name: 'WhatsAppApiService',
-        );
-        lastAlertId = dbReportId != null ? 'ALT-$dbReportId' : 'ALT-${DateTime.now().millisecondsSinceEpoch}';
-        return lastAlertId;
+    // 1. Despacho a WhatsApp vía Edge Function `whatsapp` (token de Green API
+    //    SOLO en el servidor; nunca en el APK).
+    final dispatched = await sendTextViaEdge(
+      chatId: '$cleanRecipient@c.us',
+      message: message,
+    );
+    if (dispatched) {
+      if (dbReportId != null) {
+        ReportStorageService.markReportAsSent(dbReportId);
       }
-    } catch (e) {
-      developer.log('Fallo despacho directo Green API: $e', name: 'WhatsAppApiService');
+      developer.log(
+        'Alerta despachada con éxito vía Edge Function a WhatsApp.',
+        name: 'WhatsAppApiService',
+      );
+      lastAlertId = dbReportId != null ? 'ALT-$dbReportId' : 'ALT-${DateTime.now().millisecondsSinceEpoch}';
+      return lastAlertId;
     }
 
     // 2. Respaldo opcional vía Backend local (si está activo)
