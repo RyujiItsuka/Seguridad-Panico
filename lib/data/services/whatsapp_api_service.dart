@@ -90,12 +90,94 @@ class WhatsAppApiService {
     return clean.isNotEmpty ? clean : '51976264949';
   }
 
+  /// Construye el mensaje de alerta con FORMATO UNIFICADO Y ORDENADO.
+  ///
+  /// Orden fijo de los bloques (igual en Flutter y en el servicio nativo Kotlin):
+  ///   1. Encabezado (tipo de alerta)
+  ///   2. Identificación (fecha/hora, ciudadano, celular, disparador)
+  ///   3. Ubicación (dirección, coordenadas, calidad GPS, enlaces de mapa)
+  ///   4. Descripción / evidencias (solo si existen)
+  ///   5. Pie de despacho
+  static String buildAlertMessage({
+    required String headline,
+    String address = 'Av. de la Constitución 145, Lima',
+    double lat = -12.04637,
+    double lon = -77.02987,
+    String source = 'BOTÓN PRINCIPAL',
+    String? locationQuality,
+    String? citizenName,
+    String? citizenDni,
+    String? citizenPhone,
+    String? description,
+    int photoCount = 0,
+    DateTime? timestamp,
+  }) {
+    final ts = timestamp ?? DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final dateTimeStr = '${two(ts.day)}/${two(ts.month)}/${ts.year} ${two(ts.hour)}:${two(ts.minute)}';
+
+    final latStr = lat.toStringAsFixed(5);
+    final lonStr = lon.toStringAsFixed(5);
+    final gmapsUrl = 'https://maps.google.com/?q=$latStr,$lonStr';
+    final gmapsNavUrl = 'https://www.google.com/maps/dir/?api=1&destination=$latStr,$lonStr';
+
+    final buf = StringBuffer();
+    // 1. Encabezado
+    buf.writeln('*$headline*');
+    buf.writeln('━━━━━━━━━━━━━━━━━━━');
+    // 2. Identificación
+    buf.writeln('📅 *Fecha/Hora:* $dateTimeStr');
+    final name = (citizenName ?? '').trim();
+    final dni = (citizenDni ?? '').trim();
+    if (name.isNotEmpty || dni.isNotEmpty) {
+      final who = name.isNotEmpty ? name : 'Ciudadano';
+      buf.writeln('👤 *Ciudadano:* $who${dni.isNotEmpty ? ' (DNI $dni)' : ''}');
+    }
+    final phone = (citizenPhone ?? '').trim();
+    if (phone.isNotEmpty) {
+      buf.writeln('📱 *Celular:* $phone');
+    }
+    buf.writeln('⚡ *Disparador:* $source');
+    buf.writeln();
+    // 3. Ubicación
+    buf.writeln('*📍 UBICACIÓN*');
+    buf.writeln('• Dirección: $address');
+    buf.writeln('• Coordenadas: $latStr, $lonStr');
+    final quality = (locationQuality ?? '').trim();
+    if (quality.isNotEmpty) {
+      buf.writeln('• Calidad GPS: $quality');
+    }
+    buf.writeln('• 🗺️ Ver en mapa: $gmapsUrl');
+    buf.writeln('• 🚗 Cómo llegar: $gmapsNavUrl');
+    // 4. Descripción / evidencias
+    final desc = (description ?? '').trim();
+    if (desc.isNotEmpty) {
+      buf.writeln();
+      buf.writeln('*📝 DESCRIPCIÓN*');
+      buf.writeln(desc);
+    }
+    if (photoCount > 0) {
+      buf.writeln();
+      buf.writeln('📸 *Evidencias:* $photoCount fotografía(s) adjunta(s)');
+    }
+    // 5. Pie de despacho
+    buf.writeln();
+    buf.write('🛡️ Despacho automático a la Central de Video Vigilancia.');
+    return buf.toString();
+  }
+
+  /// Mensaje predefinido por categoría de emergencia (formato unificado).
   static String getPredefinedMessage(
     String category, {
     String address = 'Av. de la Constitución 145, Lima',
     double lat = -12.04637,
     double lon = -77.02987,
     String source = 'BOTÓN PRINCIPAL',
+    String? locationQuality,
+    String? citizenName,
+    String? citizenDni,
+    String? citizenPhone,
+    int photoCount = 0,
   }) {
     final catNormalized = category.trim().toUpperCase();
 
@@ -127,15 +209,18 @@ class WhatsAppApiService {
         break;
     }
 
-    final gmapsNav = '🚗 Cómo llegar (Google Maps): https://www.google.com/maps/dir/?api=1&destination=${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
-
-    return '$headline\n'
-        '📍 Ubicación: $address\n'
-        '🛰️ Coordenadas: Lat ${lat.toStringAsFixed(5)}, Lon ${lon.toStringAsFixed(5)}\n'
-        '🗺️ Mapa: https://maps.google.com/?q=${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}\n'
-        '$gmapsNav\n'
-        '⚡ Disparador: $source\n'
-        '🛡️ Despacho automático WhatsApp API a la Central de Video Vigilancia.';
+    return buildAlertMessage(
+      headline: headline,
+      address: address,
+      lat: lat,
+      lon: lon,
+      source: source,
+      locationQuality: locationQuality,
+      citizenName: citizenName,
+      citizenDni: citizenDni,
+      citizenPhone: citizenPhone,
+      photoCount: photoCount,
+    );
   }
 
   /// Último ID de alerta despachada (usado para inicializar rastreo en vivo de ROBO)
@@ -186,6 +271,7 @@ class WhatsAppApiService {
     double lat = -12.04637,
     double lon = -77.02987,
     String address = 'Av. de la Constitución 145, Lima',
+    String? locationQuality,
     List<String>? imagePaths,
   }) async {
     // Protección contra doble disparo involuntario en menos de 5 segundos
@@ -202,6 +288,12 @@ class WhatsAppApiService {
     _lastDispatchTime = DateTime.now();
     _lastDispatchedCategory = category;
 
+    // Datos del ciudadano registrado (bloque de identificación del mensaje).
+    Map<String, String>? citizen;
+    try {
+      citizen = await SessionService.getUserData();
+    } catch (_) {}
+
     final message = customMessage ??
         getPredefinedMessage(
           category,
@@ -209,6 +301,11 @@ class WhatsAppApiService {
           lat: lat,
           lon: lon,
           source: source,
+          locationQuality: locationQuality,
+          citizenName: citizen?['name'],
+          citizenDni: citizen?['dni'],
+          citizenPhone: citizen?['phone'],
+          photoCount: imagePaths?.length ?? 0,
         );
 
     final cleanRecipient = normalizeNumber(recipientNumber);
@@ -235,11 +332,8 @@ class WhatsAppApiService {
       developer.log('Error al invocar saveReportToDatabase: $dbErr', name: 'WhatsAppApiService');
     }
 
-    // Obtener datos del ciudadano registrado
-    Map<String, String>? citizen;
-    try {
-      citizen = await SessionService.getUserData();
-    } catch (_) {}
+    // Nota: los datos del ciudadano ya se obtuvieron arriba (bloque de identificación
+    // del mensaje) y se reutilizan aquí para el payload del backend.
 
     // Despacho de fotografías de evidencia vía Edge Function `whatsapp`
     // (multipart -> sendFileByUpload). El token de Green API vive solo en el

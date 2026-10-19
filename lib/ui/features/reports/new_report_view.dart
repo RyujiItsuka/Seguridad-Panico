@@ -237,14 +237,17 @@ class _NewReportViewState extends State<NewReportView> {
 
     final customDesc = _descriptionController.text.trim();
     final photoCount = _capturedImages.length;
-    final photoText = photoCount > 0 ? '\n📸 Evidencias: $photoCount fotografía(s) adjunta(s)' : '';
 
-    final mapLinks = '🗺️ Mapa en vivo: https://maps.google.com/?q=${_lat.toStringAsFixed(5)},${_lon.toStringAsFixed(5)}\n'
-        '🚗 Cómo llegar (Google Maps): https://www.google.com/maps/dir/?api=1&destination=${_lat.toStringAsFixed(5)},${_lon.toStringAsFixed(5)}';
-
-    final customMsg = customDesc.isNotEmpty
-        ? '⚠️ REPORTE CIUDADANO PERSONALIZADO ⚠️\n$customDesc$photoText\n📍 Ubicación GPS: $_currentAddress\n🛰️ Coordenadas: Lat ${_lat.toStringAsFixed(5)}, Lon ${_lon.toStringAsFixed(5)}\n$mapLinks\n🛡️ Despacho Central de Video Vigilancia.'
-        : '⚠️ REPORTE CIUDADANO PERSONALIZADO ⚠️$photoText\n📍 Ubicación GPS: $_currentAddress\n🛰️ Coordenadas: Lat ${_lat.toStringAsFixed(5)}, Lon ${_lon.toStringAsFixed(5)}\n$mapLinks\n🛡️ Despacho Central de Video Vigilancia.';
+    // Formato unificado y ordenado (mismo que las alertas automáticas).
+    final customMsg = WhatsAppApiService.buildAlertMessage(
+      headline: '⚠️ REPORTE CIUDADANO PERSONALIZADO ⚠️',
+      address: _currentAddress,
+      lat: _lat,
+      lon: _lon,
+      source: 'FORMULARIO PERSONALIZADO',
+      description: customDesc,
+      photoCount: photoCount,
+    );
 
     setState(() => _isSubmitting = true);
 

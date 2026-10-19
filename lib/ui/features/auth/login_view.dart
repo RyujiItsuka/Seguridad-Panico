@@ -280,6 +280,7 @@ class _LoginViewState extends State<LoginView> {
     String? errorMessage;
     String targetPhone = '';
     String verifiedDni = '';
+    String? resetToken;
     bool obscureNewPass = true;
     bool obscureConfirmPass = true;
 
@@ -625,6 +626,7 @@ class _LoginViewState extends State<LoginView> {
 
                             setDialogState(() {
                               isProcessing = false;
+                              resetToken = verifyRes.token;
                               step = 3;
                               errorMessage = null;
                             });
@@ -654,6 +656,7 @@ class _LoginViewState extends State<LoginView> {
                             final resetRes = await AuthService.resetPassword(
                               dni: verifiedDni,
                               newPassword: newPass,
+                              resetToken: resetToken ?? '',
                             );
 
                             if (!resetRes.success) {

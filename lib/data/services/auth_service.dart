@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:developer' as developer;
-import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'session_service.dart';
 import 'whatsapp_api_service.dart';
@@ -32,6 +31,10 @@ class AuthService {
         'Authorization': 'Bearer $_anonKey',
       };
 
+  /// Cliente HTTP inyectable. En producción usa el cliente real; en pruebas se
+  /// reemplaza por un `MockClient` para validar la lógica sin red.
+  static http.Client httpClient = http.Client();
+
   /// HU-SEG-01: Solicita un código OTP de 6 dígitos enviado por WhatsApp al registrarse
   static Future<AuthResult> requestOtp({
     required String dni,
@@ -41,7 +44,7 @@ class AuthService {
     final cleanPhone = phone.trim();
 
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('$_securityFunctionUrl?action=send-otp'),
             headers: _headers,
@@ -63,8 +66,10 @@ class AuthService {
       }
     } catch (e) {
       developer.log('Error solicitando OTP: $e', name: 'AuthService');
-      // Respaldo para pruebas locales sin conexión a internet
-      return AuthResult(success: true);
+      return AuthResult(
+        success: false,
+        errorMessage: 'No se pudo conectar con la Central para enviar el código. Revise su red.',
+      );
     }
   }
 
@@ -80,7 +85,7 @@ class AuthService {
     }
 
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('$_securityFunctionUrl?action=verify-otp'),
             headers: _headers,
@@ -93,7 +98,11 @@ class AuthService {
           .timeout(const Duration(seconds: 6));
 
       if (response.statusCode == 200) {
-        return AuthResult(success: true);
+        final data = jsonDecode(response.body);
+        return AuthResult(
+          success: true,
+          token: data is Map ? data['resetToken']?.toString() : null,
+        );
       } else {
         final data = jsonDecode(response.body);
         return AuthResult(
@@ -103,9 +112,10 @@ class AuthService {
       }
     } catch (e) {
       developer.log('Error verificando OTP: $e', name: 'AuthService');
-      // Aceptar '123456' como código de prueba universal
-      if (cleanCode == '123456') return AuthResult(success: true);
-      return AuthResult(success: false, errorMessage: 'Fallo al verificar código OTP.');
+      return AuthResult(
+        success: false,
+        errorMessage: 'No se pudo verificar el código. Revise su conexión.',
+      );
     }
   }
 
@@ -126,7 +136,7 @@ class AuthService {
 
     // 1. Intento primario a través de la Edge Function de Seguridad (Bcrypt + JWT)
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('$_securityFunctionUrl?action=login'),
             headers: _headers,
@@ -169,20 +179,9 @@ class AuthService {
       developer.log('Fallo Edge Function security login: $e', name: 'AuthService');
     }
 
-    // Respaldo de prueba offline (solo cuenta demo; la validación real es por
-    // la Edge Function `security`, que usa bcrypt. No se lee la tabla persona
-    // directamente desde el cliente.)
-    if (cleanDni == '12345678' && cleanPassword == '12345678') {
-      await SessionService.saveSession(
-        dni: cleanDni,
-        name: 'Carlos Mendoza Ruiz',
-        phone: '+51 976264949',
-        secretPin: '1234',
-        idPersona: 2,
-      );
-      return AuthResult(success: true);
-    }
-
+    // Sin respaldo offline: la validación es SIEMPRE por la Edge Function
+    // `security` (bcrypt + JWT). No existen credenciales demo ni lecturas
+    // directas a la tabla persona desde el cliente.
     return AuthResult(success: false, errorMessage: 'Sin conexión con la Central. Verifique su red.');
   }
 
@@ -228,7 +227,7 @@ class AuthService {
 
     // 1. Intento primario con Edge Function de Seguridad
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('$_securityFunctionUrl?action=register'),
             headers: _headers,
@@ -277,7 +276,7 @@ class AuthService {
   /// HU-SEG-02: Revoca todas las sesiones del usuario ante reporte de robo de celular
   static Future<bool> revokeSession({required String dni}) async {
     try {
-      final response = await http.post(
+      final response = await httpClient.post(
         Uri.parse('$_securityFunctionUrl?action=revoke-session'),
         headers: _headers,
         body: jsonEncode({'dni': dni}),
@@ -296,7 +295,7 @@ class AuthService {
     if (cleanDni.isEmpty) return null;
 
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('$_securityFunctionUrl?action=find-user'),
             headers: _headers,
@@ -315,33 +314,26 @@ class AuthService {
       developer.log('Error buscando usuario por DNI vía Edge Function: $e', name: 'AuthService');
     }
 
-    // Fallback: verificar sesión actual si coincide
+    // Fallback: verificar sesión actual si coincide (sin exponer hashes)
     final currentSession = await SessionService.getUserData();
     if (currentSession['dni'] == cleanDni) {
       return {
         'dni': currentSession['dni'],
         'telefono': currentSession['phone'],
         'nombres': currentSession['name'],
-        'pin_hash': currentSession['secretPin'],
-      };
-    }
-
-    // Fallback demo/offline
-    if (cleanDni == '12345678') {
-      return {
-        'dni': '12345678',
-        'telefono': '+51 976264949',
-        'nombres': 'Carlos Mendoza Ruiz',
-        'pin_hash': '1234',
       };
     }
 
     return null;
   }
 
-  static final Map<String, _OtpRecord> _activeOtps = {};
-
-  /// Envía un código OTP de 6 dígitos al WhatsApp del ciudadano (vía Green API y Edge Function)
+  /// Envía un código OTP de 6 dígitos al WhatsApp del ciudadano.
+  ///
+  /// El código lo GENERA EL SERVIDOR (Edge Function `security` → `whatsapp`):
+  /// el dispositivo nunca elige ni conoce el código, y la verificación es
+  /// siempre contra el servidor. Esto sustituye al OTP generado en el cliente,
+  /// que permitía a cualquier tercero que conociera un DNI pasar la
+  /// verificación usando su propio código.
   static Future<AuthResult> sendWhatsAppOtp({
     required String dni,
     required String phone,
@@ -354,103 +346,60 @@ class AuthService {
       return AuthResult(success: false, errorMessage: 'DNI o teléfono no válido.');
     }
 
-    // Generar código aleatorio de 6 dígitos
-    final random = Random();
-    final code = (100000 + random.nextInt(900000)).toString();
-
-    // Guardar en caché con expiración de 5 minutos
-    _activeOtps[cleanDni] = _OtpRecord(
-      code: code,
-      expiresAt: DateTime.now().add(const Duration(minutes: 5)),
-      phone: cleanPhone,
-    );
-
-    // 1. Invocar función de seguridad oficial
     try {
-      await http.post(
-        Uri.parse('$_securityFunctionUrl?action=send-otp'),
-        headers: _headers,
-        body: jsonEncode({
-          'dni': cleanDni,
-          'phone': cleanPhone,
-          'code': code,
-        }),
-      ).timeout(const Duration(seconds: 4));
-    } catch (_) {}
+      final response = await httpClient
+          .post(
+            Uri.parse('$_securityFunctionUrl?action=send-otp'),
+            headers: _headers,
+            body: jsonEncode({
+              'dni': cleanDni,
+              'phone': cleanPhone,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
 
-    // 2. Envío directo al WhatsApp del usuario por Green API para máxima confiabilidad
-    try {
-      final normalizedRecipient = WhatsAppApiService.normalizeNumber(cleanPhone);
-      final message = '🛡️ *ALERTA CIUDADANA - CÓDIGO DE SEGURIDAD*\n\n'
-          'Tu código de verificación para $purpose es: *$code*\n\n'
-          '⏱️ Válido por 5 minutos.\n'
-          '⚠️ Por tu seguridad, no compartas este código con nadie.';
-
-      final sent = await WhatsAppApiService.sendTextViaEdge(
-        chatId: '$normalizedRecipient@c.us',
-        message: message,
-        timeout: const Duration(seconds: 6),
-      );
-
-      developer.log(
-        'OTP ($code) enviado a WhatsApp $normalizedRecipient: ok=$sent',
-        name: 'AuthService',
+      if (response.statusCode == 200) {
+        return AuthResult(success: true);
+      }
+      final data = jsonDecode(response.body);
+      return AuthResult(
+        success: false,
+        errorMessage: data['error'] ?? 'No se pudo enviar el código.',
       );
     } catch (e) {
-      developer.log('Error enviando WhatsApp vía Edge Function: $e', name: 'AuthService');
+      developer.log('Error enviando OTP ($purpose): $e', name: 'AuthService');
+      return AuthResult(
+        success: false,
+        errorMessage: 'No se pudo enviar el código. Revise su red.',
+      );
     }
-
-    return AuthResult(success: true);
   }
 
-  /// Verifica el código OTP para recuperación o cambio de PIN
+  /// Verifica el código OTP contra el servidor y devuelve en `token` un
+  /// resetToken firmado que autoriza el cambio de contraseña. No usa caché local.
   static Future<AuthResult> verifyRecoveryOtp({
     required String dni,
     required String phone,
     required String code,
   }) async {
-    final cleanDni = dni.trim();
     final cleanCode = code.trim();
-
     if (cleanCode.length != 6) {
       return AuthResult(success: false, errorMessage: 'El código debe tener 6 dígitos.');
     }
-
-    // Código universal de pruebas
-    if (cleanCode == '123456') {
-      return AuthResult(success: true);
-    }
-
-    // Validar contra caché activa
-    final record = _activeOtps[cleanDni];
-    if (record != null) {
-      if (DateTime.now().isAfter(record.expiresAt)) {
-        _activeOtps.remove(cleanDni);
-        return AuthResult(success: false, errorMessage: 'El código ha expirado. Solicita uno nuevo.');
-      }
-      if (record.code == cleanCode) {
-        _activeOtps.remove(cleanDni);
-        return AuthResult(success: true);
-      }
-    }
-
-    // Intentar también con verifyOtp oficial
-    final edgeResult = await verifyOtp(dni: cleanDni, phone: phone, code: cleanCode);
-    if (edgeResult.success) {
-      _activeOtps.remove(cleanDni);
-      return AuthResult(success: true);
-    }
-
-    return AuthResult(success: false, errorMessage: 'Código incorrecto o no coincide.');
+    return verifyOtp(dni: dni, phone: phone, code: cleanCode);
   }
 
-  /// Restablece la contraseña del ciudadano en Supabase y sesión local
+  /// Restablece la contraseña del ciudadano en Supabase.
+  /// Requiere el `resetToken` firmado que devuelve `verifyRecoveryOtp`: sin él
+  /// el servidor rechaza el cambio (evita el reseteo por DNI de terceros).
   static Future<AuthResult> resetPassword({
     required String dni,
     required String newPassword,
+    required String resetToken,
   }) async {
     final cleanDni = dni.trim();
     final cleanPassword = newPassword.trim();
+    final cleanToken = resetToken.trim();
 
     if (cleanDni.isEmpty || cleanPassword.length < 6) {
       return AuthResult(
@@ -459,23 +408,27 @@ class AuthService {
       );
     }
 
-    // 1. Intentar actualizar vía Edge Function de seguridad (bcrypt)
+    if (cleanToken.isEmpty) {
+      return AuthResult(
+        success: false,
+        errorMessage: 'Debe verificar el código OTP enviado a su WhatsApp antes de continuar.',
+      );
+    }
+
+    // Sin respaldos locales: el cambio de contraseña SOLO se considera exitoso
+    // cuando el servidor lo confirma (bcrypt + service_role + resetToken).
     try {
-      final response = await http.post(
+      final response = await httpClient.post(
         Uri.parse('$_securityFunctionUrl?action=reset-password'),
         headers: _headers,
         body: jsonEncode({
           'dni': cleanDni,
           'password': cleanPassword,
+          'token': cleanToken,
         }),
       ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        // Respaldo local si la sesión actual coincide
-        final currentSession = await SessionService.getUserData();
-        if (currentSession['dni'] == cleanDni) {
-          return AuthResult(success: true);
-        }
         return AuthResult(success: true);
       } else {
         final data = jsonDecode(response.body);
@@ -486,12 +439,6 @@ class AuthService {
       }
     } catch (e) {
       developer.log('Error actualizando contraseña vía Edge Function: $e', name: 'AuthService');
-    }
-
-    // Respaldo local si la sesión actual coincide
-    final currentSession = await SessionService.getUserData();
-    if (currentSession['dni'] == cleanDni) {
-      return AuthResult(success: true);
     }
 
     return AuthResult(
@@ -512,27 +459,37 @@ class AuthService {
       return false;
     }
 
-    // Guardar en SessionService localmente
-    await SessionService.setSecretPin(cleanPin);
+    // El servidor exige una sesión válida (JWT de login) del propio usuario.
+    final jwt = await SessionService.getJwtToken();
+    if (jwt == null || jwt.isEmpty) {
+      developer.log('updatePin sin sesión JWT válida.', name: 'AuthService');
+      return false;
+    }
 
-    // Actualizar en Supabase vía Edge Function (bcrypt)
+    // Actualizar en Supabase vía Edge Function (bcrypt). Solo cuando el servidor
+    // confirma el cambio se persiste el PIN local: se elimina el falso positivo
+    // que devolvía "true" aunque la Central no hubiese actualizado nada.
     try {
-      final response = await http
+      final response = await httpClient
           .post(
             Uri.parse('$_securityFunctionUrl?action=update-pin'),
             headers: _headers,
             body: jsonEncode({
               'dni': cleanDni,
               'pin': cleanPin,
+              'token': jwt,
             }),
           )
           .timeout(const Duration(seconds: 6));
-      return response.statusCode == 200;
+      if (response.statusCode == 200) {
+        await SessionService.setSecretPin(cleanPin);
+        return true;
+      }
+      return false;
     } catch (e) {
       developer.log('Error actualizando PIN vía Edge Function: $e', name: 'AuthService');
+      return false;
     }
-
-    return true;
   }
 
   /// Valida si un PIN es débil o fácil de adivinar (PDF Seguridad Pisco - Punto 2)
@@ -571,16 +528,4 @@ class AuthService {
 
     return null;
   }
-}
-
-class _OtpRecord {
-  final String code;
-  final DateTime expiresAt;
-  final String phone;
-
-  _OtpRecord({
-    required this.code,
-    required this.expiresAt,
-    required this.phone,
-  });
 }

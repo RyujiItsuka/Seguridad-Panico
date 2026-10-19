@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:alerta_ciudadana/data/services/whatsapp_api_service.dart';
@@ -114,9 +117,51 @@ void main() {
     setUp(() {
       SharedPreferences.setMockInitialValues({});
       FlutterSecureStorage.setMockInitialValues({});
+
+      // Servidor simulado: la generación y validación del OTP es 100% server-side.
+      AuthService.httpClient = MockClient((request) async {
+        final action = request.url.queryParameters['action'] ?? '';
+        final body = request.body.isNotEmpty
+            ? jsonDecode(request.body) as Map<String, dynamic>
+            : <String, dynamic>{};
+
+        switch (action) {
+          case 'send-otp':
+            return http.Response(jsonEncode({'success': true, 'message': 'ok'}), 200);
+          case 'verify-otp':
+            if (body['code'] == '654321') {
+              return http.Response(
+                jsonEncode({'success': true, 'resetToken': 'test-reset-token'}),
+                200,
+              );
+            }
+            return http.Response(
+              jsonEncode({'success': false, 'error': 'Código inválido o expirado (límite 5 min).'}),
+              400,
+            );
+          case 'reset-password':
+            if (body['token'] == 'test-reset-token') {
+              return http.Response(jsonEncode({'success': true}), 200);
+            }
+            return http.Response(
+              jsonEncode({'success': false, 'error': 'No autorizado'}),
+              401,
+            );
+          case 'update-pin':
+            if (body['token'] == 'session-jwt-token') {
+              return http.Response(jsonEncode({'success': true}), 200);
+            }
+            return http.Response(
+              jsonEncode({'success': false, 'error': 'No autorizado'}),
+              401,
+            );
+          default:
+            return http.Response(jsonEncode({'success': false}), 404);
+        }
+      });
     });
 
-    test('sendWhatsAppOtp and verifyRecoveryOtp validate 6-digit WhatsApp OTP code', () async {
+    test('sendWhatsAppOtp y verifyRecoveryOtp validan contra el servidor y rechazan 123456', () async {
       const testDni = '74629337';
       const testPhone = '+51 976264949';
 
@@ -127,7 +172,7 @@ void main() {
       );
       expect(sendRes.success, isTrue);
 
-      // Verify wrong length code fails
+      // Código de longitud incorrecta.
       final invalidLen = await AuthService.verifyRecoveryOtp(
         dni: testDni,
         phone: testPhone,
@@ -136,43 +181,73 @@ void main() {
       expect(invalidLen.success, isFalse);
       expect(invalidLen.errorMessage, contains('6 dígitos'));
 
-      // Verify universal test code 123456 passes
-      final validOtp = await AuthService.verifyRecoveryOtp(
+      // El código universal 123456 fue eliminado por seguridad: el servidor lo rechaza.
+      final universalOtp = await AuthService.verifyRecoveryOtp(
         dni: testDni,
         phone: testPhone,
         code: '123456',
       );
+      expect(universalOtp.success, isFalse);
+
+      // Código válido emitido por el servidor -> devuelve el resetToken firmado.
+      final validOtp = await AuthService.verifyRecoveryOtp(
+        dni: testDni,
+        phone: testPhone,
+        code: '654321',
+      );
       expect(validOtp.success, isTrue);
+      expect(validOtp.token, 'test-reset-token');
     });
 
-    test('resetPassword validates min 6 characters and updates properly', () async {
+    test('resetPassword exige resetToken y valida la contraseña', () async {
       const testDni = '12345678';
-      final tooShort = await AuthService.resetPassword(dni: testDni, newPassword: '123');
+
+      final tooShort = await AuthService.resetPassword(
+        dni: testDni,
+        newPassword: '123',
+        resetToken: 'test-reset-token',
+      );
       expect(tooShort.success, isFalse);
       expect(tooShort.errorMessage, contains('6 caracteres'));
 
-      final validReset = await AuthService.resetPassword(dni: testDni, newPassword: 'newSecretPass2026');
+      // Sin token de verificación no se permite el cambio.
+      final noToken = await AuthService.resetPassword(
+        dni: testDni,
+        newPassword: 'newSecretPass2026',
+        resetToken: '',
+      );
+      expect(noToken.success, isFalse);
+
+      final validReset = await AuthService.resetPassword(
+        dni: testDni,
+        newPassword: 'newSecretPass2026',
+        resetToken: 'test-reset-token',
+      );
       expect(validReset.success, isTrue);
     });
 
-    test('updatePin updates secret PIN in SessionService and rejects invalid PINs', () async {
+    test('updatePin exige sesión y solo persiste el PIN si el servidor confirma', () async {
       const testDni = '12345678';
 
-      // Rejects non-4-digit PIN
+      // Rechaza PIN no numérico o de longitud incorrecta.
       final invalidLen = await AuthService.updatePin(dni: testDni, newPin: '123');
       expect(invalidLen, isFalse);
 
       final invalidAlpha = await AuthService.updatePin(dni: testDni, newPin: 'abcd');
       expect(invalidAlpha, isFalse);
 
-      // Valid 4-digit PIN
-      final success = await AuthService.updatePin(dni: testDni, newPin: '9876');
+      // Sin sesión JWT no se autoriza el cambio.
+      final noSession = await AuthService.updatePin(dni: testDni, newPin: '5839');
+      expect(noSession, isFalse);
+
+      // Con sesión válida, el servidor confirma y se guarda el PIN.
+      await SessionService.saveSession(dni: testDni, jwtToken: 'session-jwt-token');
+      final success = await AuthService.updatePin(dni: testDni, newPin: '5839');
       expect(success, isTrue);
 
-      // Verify SessionService reflects the updated PIN
       final savedPin = await SessionService.getSecretPin();
-      expect(savedPin, '9876');
-      expect(await SessionService.verifySecretPin('9876'), isTrue);
+      expect(savedPin, '5839');
+      expect(await SessionService.verifySecretPin('5839'), isTrue);
     });
   });
 }

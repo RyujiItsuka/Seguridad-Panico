@@ -622,7 +622,7 @@ class _ProfileViewState extends State<_ProfileView> {
   @override
   Widget build(BuildContext context) {
     final name = _userData['name'] ?? 'Ciudadano';
-    final dni = _userData['dni'] ?? '12345678';
+    final dni = _userData['dni'] ?? 'No registrado';
     final phone = _userData['phone'] ?? '+51 999 999 999';
 
     return Scaffold(
@@ -1265,7 +1265,15 @@ class _ProfileViewState extends State<_ProfileView> {
                             return;
                           }
 
-                          await AuthService.updatePin(dni: dni, newPin: nPin);
+                          final pinOk = await AuthService.updatePin(dni: dni, newPin: nPin);
+                          if (!pinOk) {
+                            setDState(() {
+                              isSaving = false;
+                              errorMessage =
+                                  'No se pudo actualizar el PIN en la Central. Verifique su conexión e intente de nuevo.';
+                            });
+                            return;
+                          }
 
                           if (dctx.mounted) Navigator.of(dctx).pop();
                           if (context.mounted) {
@@ -1617,7 +1625,15 @@ class _ProfileViewState extends State<_ProfileView> {
                               errorMessage = null;
                             });
 
-                            await AuthService.updatePin(dni: dni, newPin: nPin);
+                            final pinOk = await AuthService.updatePin(dni: dni, newPin: nPin);
+                            if (!pinOk) {
+                              setDState(() {
+                                isProcessing = false;
+                                errorMessage =
+                                    'No se pudo guardar el PIN. Verifique su conexión e intente nuevamente.';
+                              });
+                              return;
+                            }
 
                             if (dctx.mounted) Navigator.of(dctx).pop();
                             if (context.mounted) {

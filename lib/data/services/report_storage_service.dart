@@ -13,6 +13,11 @@ class ReportStorageService {
   static const String _keyLocalReports = 'local_saved_reports_v2';
   static const String _supabaseUrl = 'https://emtzprcntefzkvvzmhfk.supabase.co';
 
+  /// Edge Function de seguridad: única vía autorizada para leer la tabla
+  /// `persona` (el RLS cierra el acceso directo al rol anon).
+  static const String _securityFunctionUrl =
+      '$_supabaseUrl/functions/v1/security';
+
   /// Obtiene los headers autorizados para PostgREST de Supabase
   /// Importante: PostgREST exige el JWT anónimo del proyecto en Authorization: Bearer
   static Map<String, String> get _supabaseHeaders => {
@@ -63,22 +68,29 @@ class ReportStorageService {
     final dni = citizen['dni']?.trim() ?? '';
     if (dni.isNotEmpty) {
       try {
-        final pRes = await http.get(
-          Uri.parse('$_supabaseUrl/rest/v1/persona?dni=eq.$dni&select=id_persona'),
-          headers: _supabaseHeaders,
-        ).timeout(const Duration(seconds: 4));
-        if (pRes.statusCode == 200) {
-          final List<dynamic> pData = jsonDecode(pRes.body);
-          if (pData.isNotEmpty) {
-            idPersona = int.tryParse(pData.first['id_persona']?.toString() ?? '');
-            if (idPersona != null) {
+        // Se resuelve vía Edge Function `security` (find-user) porque la tabla
+        // `persona` tiene el RLS cerrado al rol anon: el acceso REST directo
+        // dejó de estar permitido.
+        final res = await http
+            .post(
+              Uri.parse('$_securityFunctionUrl?action=find-user'),
+              headers: _supabaseHeaders,
+              body: jsonEncode({'dni': dni}),
+            )
+            .timeout(const Duration(seconds: 6));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          final user = data is Map<String, dynamic> ? data['user'] : null;
+          if (user is Map<String, dynamic>) {
+            idPersona = int.tryParse(user['id_persona']?.toString() ?? '');
+            if (idPersona != null && idPersona > 0) {
               final prefs = await SharedPreferences.getInstance();
               await prefs.setInt('app_session_user_id_persona', idPersona);
             }
           }
         }
       } catch (e) {
-        developer.log('Error resolviendo id_persona por DNI: $e', name: 'ReportStorageService');
+        developer.log('Error resolviendo id_persona vía Edge Function: $e', name: 'ReportStorageService');
       }
     }
     return idPersona;

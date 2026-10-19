@@ -74,7 +74,6 @@ class _SecurityUnlockViewState extends State<SecurityUnlockView> with SingleTick
             dni: rawDni,
             name: fullName,
             phone: (user['telefono'] ?? user['phone'] ?? '').toString(),
-            secretPin: user['pin_hash']?.toString(),
             idPersona: user['id_persona'] is int
                 ? user['id_persona'] as int
                 : int.tryParse(user['id_persona']?.toString() ?? ''),

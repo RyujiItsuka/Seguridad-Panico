@@ -1400,7 +1400,8 @@ class EmergencyForegroundService : Service() {
                 } catch (_: Exception) {}
 
                 // 2. Leer datos del ciudadano desde SharedPreferences de forma completamente segura (sin ClassCastException)
-                val citizenDni = prefs.getString("flutter.app_session_user_dni", null) ?: "74629337"
+                //    Sin valores demo: si no hay sesión, el DNI queda vacío (no se inventa uno).
+                val citizenDni = prefs.getString("flutter.app_session_user_dni", null)?.trim().orEmpty()
                 val idPersona: Int = try {
                     val raw = prefs.all["flutter.app_session_user_id_persona"]
                     when (raw) {
@@ -1428,16 +1429,36 @@ class EmergencyForegroundService : Service() {
                 val latStr = String.format(Locale.US, "%.5f", lat)
                 val lonStr = String.format(Locale.US, "%.5f", lon)
                 val gmapsUrl = "https://maps.google.com/?q=$latStr,$lonStr"
-                val gmapsNav = "🚗 Cómo llegar (Google Maps): https://www.google.com/maps/dir/?api=1&destination=$latStr,$lonStr"
+                val gmapsNavUrl = "https://www.google.com/maps/dir/?api=1&destination=$latStr,$lonStr"
 
-                val message = "$headline\n" +
-                        "📍 Ubicación: $realAddress\n" +
-                        "🛰️ Coordenadas: Lat $latStr, Lon $lonStr\n" +
-                        "📡 Calidad GPS: $locationQuality\n" +
-                        "🗺️ Mapa: $gmapsUrl\n" +
-                        "$gmapsNav\n" +
-                        "⚡ Disparador: $triggerLabel\n" +
-                        "🛡️ Despacho automático WhatsApp API a la Central de Video Vigilancia."
+                // Datos del ciudadano en sesión (SharedPreferences de Flutter, prefijo "flutter.")
+                val citizenName = prefs.getString("flutter.app_session_user_name", null)
+                    ?: prefs.getString("flutter.app_session_user_full_name", null)
+                    ?: "Ciudadano"
+                val citizenPhone = prefs.getString("flutter.app_session_user_phone", null) ?: ""
+                val dateTimeStr = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US).format(Date())
+
+                // ── Mensaje de alerta con formato unificado y ordenado ──
+                // Orden fijo: Encabezado → Identificación → Ubicación → Pie.
+                val message = buildString {
+                    appendLine("*$headline*")
+                    appendLine("━━━━━━━━━━━━━━━━━━━")
+                    appendLine("📅 *Fecha/Hora:* $dateTimeStr")
+                    appendLine("👤 *Ciudadano:* $citizenName" + if (citizenDni.isNotBlank()) " (DNI $citizenDni)" else "")
+                    if (citizenPhone.isNotBlank()) {
+                        appendLine("📱 *Celular:* $citizenPhone")
+                    }
+                    appendLine("⚡ *Disparador:* $triggerLabel")
+                    appendLine()
+                    appendLine("*📍 UBICACIÓN*")
+                    appendLine("• Dirección: $realAddress")
+                    appendLine("• Coordenadas: $latStr, $lonStr")
+                    appendLine("• Calidad GPS: $locationQuality")
+                    appendLine("• 🗺️ Ver en mapa: $gmapsUrl")
+                    appendLine("• 🚗 Cómo llegar: $gmapsNavUrl")
+                    appendLine()
+                    append("🛡️ Despacho automático a la Central de Video Vigilancia.")
+                }
 
                 // 3. Despachar mensaje a WhatsApp vía Edge Function `whatsapp`.
                 //    El token de Green API vive SOLO en el servidor (Deno.env);
