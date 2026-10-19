@@ -50,6 +50,11 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
   void _checkPermissionsOnStartup() {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
+      // Solo solicitar permisos si no los tiene ya concedidos.
+      // Esto evita volver a preguntar al regresar a la app con sesión activa.
+      final hasPermission = await GpsLocationService.hasLocationPermission();
+      if (hasPermission) return;
+      if (!mounted) return;
       await GpsLocationService.checkAndPromptLocationPermission(context);
     });
   }

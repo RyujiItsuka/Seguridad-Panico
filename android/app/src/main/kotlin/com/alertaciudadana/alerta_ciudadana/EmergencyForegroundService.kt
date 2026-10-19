@@ -196,6 +196,63 @@ class EmergencyForegroundService : Service() {
             }
         }
 
+        // ────────────────────────────────────────────────────────────────────
+        //  Detección del gesto de pánico: "3 o más pulsaciones RÁPIDAS y
+        //  CONSECUTIVAS del botón de encendido".
+        //
+        //  Cada transición de pantalla (ACTION_SCREEN_OFF / ACTION_SCREEN_ON)
+        //  equivale a UNA pulsación física real del botón de encendido. La MISMA
+        //  regla de conteo la usan el servicio (pantalla on/off, en segundo plano)
+        //  y MainActivity (teclas físicas, en primer plano) para que el conteo
+        //  sea idéntico y no se desincronice.
+        // ────────────────────────────────────────────────────────────────────
+
+        /** Número mínimo de pulsaciones rápidas para disparar la alerta. */
+        const val POWER_MIN_PRESSES = 3
+
+        /** Máxima separación (ms) entre dos pulsaciones para considerarlas "rápidas y consecutivas". */
+        const val POWER_MAX_GAP_MS = 1800L
+
+        /** Ventana total (ms) para completar las 3 pulsaciones. */
+        const val POWER_WINDOW_3_MS = 3500L
+
+        /** Ventana extendida (ms) cuando el usuario pulsa 5 o más veces (ráfaga de pánico). */
+        const val POWER_WINDOW_BURST_MS = 5000L
+
+        /**
+         * Registra una nueva pulsación dentro de una secuencia y evalúa si se completó
+         * el gesto de pánico.
+         *
+         * Reglas:
+         *  - Si transcurre más de [POWER_MAX_GAP_MS] desde la última pulsación, la
+         *    secuencia se reinicia (dejan de ser "consecutivas").
+         *  - Se conservan solo las pulsaciones dentro de la ventana deslizante.
+         *  - Se dispara con 3+ pulsaciones dentro de la ventana (5+ tienen margen extra).
+         *
+         * @param timestamps lista mutable con las marcas de tiempo de la secuencia en curso.
+         * @param now marca de tiempo de la pulsación actual.
+         * @return true cuando se completó el gesto de 3+ pulsaciones rápidas.
+         */
+        fun registerRapidPowerPress(timestamps: MutableList<Long>, now: Long): Boolean {
+            // Pausa larga entre pulsaciones: la secuencia ya no es "consecutiva".
+            if (timestamps.isNotEmpty() && (now - timestamps.last()) > POWER_MAX_GAP_MS) {
+                timestamps.clear()
+            }
+
+            val window = if (timestamps.size >= 5) POWER_WINDOW_BURST_MS else POWER_WINDOW_3_MS
+            timestamps.removeAll { now - it > window }
+            timestamps.add(now)
+
+            if (timestamps.size < POWER_MIN_PRESSES) return false
+
+            val maxAllowed = if (timestamps.size >= 5) POWER_WINDOW_BURST_MS else POWER_WINDOW_3_MS
+            if (now - timestamps.first() <= maxAllowed) return true
+
+            // Fuera de ventana: conservar solo lo más reciente para el siguiente intento.
+            timestamps.removeAll { now - it > POWER_MAX_GAP_MS }
+            return false
+        }
+
         fun triggerSinglePressHaptic(context: Context) {
             try {
                 val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -370,6 +427,15 @@ class EmergencyForegroundService : Service() {
         }
 
         when (intent?.action) {
+            ACTION_START_GUARD, null -> {
+                // Asegurar que el servicio permanezca en primer plano aunque se cierre la app
+                try {
+                    val notification = buildCurrentNotification()
+                    startForeground(NOTIFICATION_ID, notification)
+                } catch (e: Exception) {
+                    android.util.Log.e("EmergencyService", "Error re-lanzando foreground tras cierre de app: ${e.message}")
+                }
+            }
             ACTION_STOP_GUARD -> {
                 stopForeground(true)
                 stopSelf()
@@ -541,54 +607,44 @@ class EmergencyForegroundService : Service() {
                     }
                 }
 
-                // Debounce de 70ms para filtrar rebotes mecánicos del botón
-                if (now - lastScreenActionTime < 70L) {
+                // Anti-rebote mínimo: cada transición real de pantalla ya es 1 pulsación.
+                if (now - lastScreenActionTime < 60L) {
                     return
                 }
                 lastScreenActionTime = now
                 lastScreenAction = action
 
-                // Limpiar si el intervalo entre pulsaciones consecutivas excede 2200ms
-                // (Margen amplio para absorber la latencia de encendido/apagado de pantalla en Android)
-                if (powerPressTimestamps.isNotEmpty()) {
-                    val gap = now - powerPressTimestamps.last()
-                    if (gap > 2200L) {
-                        powerPressTimestamps.clear()
-                    }
-                }
-
-                // Descartar marcas con más de 4500ms de antigüedad en la ventana deslizante
-                powerPressTimestamps.removeAll { now - it > 4500L }
-
-                powerPressTimestamps.add(now)
-
+                // Registrar la pulsación y evaluar el gesto de pánico.
+                val reached = registerRapidPowerPress(powerPressTimestamps, now)
                 val currentCount = powerPressTimestamps.size
-                android.util.Log.i("EmergencyService", "🔘 Pulsación física detectada [$action]. Acumuladas en ráfaga: $currentCount")
+                android.util.Log.i("EmergencyService", "🔘 Pulsación física detectada [$action]. Acumuladas: $currentCount (máx. ${POWER_MAX_GAP_MS}ms entre pulsaciones)")
 
-                // Activación de emergencia: 3 o más pulsaciones rápidas y seguidas
-                // La vibración háptica se activa ÚNICAMENTE a partir de la 3ra pulsación (3, 4, 5...)
-                if (currentCount >= 3) {
-                    val firstPress = powerPressTimestamps.first()
-                    val totalDuration = now - firstPress
-
-                    if (totalDuration <= 4500L) {
-                        // Confirmación háptica firme y distintiva desde la 3ra pulsación
-                        triggerConfirmedHaptic(this@EmergencyForegroundService)
-                        powerPressTimestamps.clear()
-                        lastScreenAction = null
-                        lastButtonTriggerTime = now
-                        android.util.Log.i("EmergencyService", "⚡ DISPARO CONFIRMADO BOTÓN DE ENCENDIDO ($currentCount PULSACIONES RÁPIDAS en ${totalDuration}ms)")
-                        onRapidPowerPressDetected()
-                    } else {
-                        while (powerPressTimestamps.isNotEmpty() && (now - powerPressTimestamps.first() > 4500L)) {
-                            powerPressTimestamps.removeAt(0)
-                        }
-                    }
+                if (reached) {
+                    powerPressTimestamps.clear()
+                    lastScreenAction = null
+                    lastButtonTriggerTime = now
+                    android.util.Log.i("EmergencyService", "⚡ DISPARO CONFIRMADO: 3+ pulsaciones rápidas del botón de encendido")
+                    triggerConfirmedHaptic(this@EmergencyForegroundService)
+                    onRapidPowerPressDetected()
+                } else if (currentCount == 2) {
+                    // Feedback intermedio: quien pulsa "asustado" siente que la secuencia avanza.
+                    triggerSinglePressHaptic(this@EmergencyForegroundService)
                 }
             }
         }
 
-        registerReceiver(screenReceiver, filter)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(screenReceiver, filter)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("EmergencyService", "No se pudo registrar el receptor de pantalla: ${e.message}")
+            try {
+                registerReceiver(screenReceiver, filter)
+            } catch (_: Exception) {}
+        }
     }
 
     private fun registerSensorListener() {
@@ -1281,10 +1337,16 @@ class EmergencyForegroundService : Service() {
                 val cacheIsFreshSatellite = cachedRealLat != null && cachedRealLon != null && cacheAgeMs in 0..90_000L
 
                 when {
-                    bestLocation != null && bestLocation.accuracy <= 70f && hasSatelliteFix() -> {
+                    bestLocation != null && bestLocation.accuracy <= 50f && hasSatelliteFix() -> {
                         lat = bestLocation.latitude
                         lon = bestLocation.longitude
                         locationQuality = "SATELITAL (±${String.format(Locale.US, "%.1f", bestLocation.accuracy)}m)"
+                    }
+                    bestLocation != null && bestLocation.accuracy <= 70f -> {
+                        // Puede ser satelital híbrido; prioriza si proveedor es GPS/Fused
+                        lat = bestLocation.latitude
+                        lon = bestLocation.longitude
+                        locationQuality = "SATELITAL HÍBRIDO (±${String.format(Locale.US, "%.1f", bestLocation.accuracy)}m)"
                     }
                     cacheIsFreshSatellite -> {
                         lat = cachedRealLat!!
@@ -1612,30 +1674,44 @@ class EmergencyForegroundService : Service() {
             super.onTaskRemoved(rootIntent)
             return
         }
-        val restartServiceIntent = Intent(applicationContext, EmergencyForegroundService::class.java).apply {
+        // Reactivar protección: el servicio debe continuar vigilando sensor/botón aunque
+        // el usuario cierre (swipe away) la app. Re-lanzar como foreground service.
+        val restartIntent = Intent(applicationContext, EmergencyForegroundService::class.java).apply {
             setPackage(packageName)
+            action = ACTION_START_GUARD
         }
-        val restartPendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            PendingIntent.getForegroundService(
-                applicationContext,
-                101,
-                restartServiceIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-        } else {
-            PendingIntent.getService(
-                applicationContext,
-                101,
-                restartServiceIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(restartIntent)
+            } else {
+                applicationContext.startService(restartIntent)
+            }
+        } catch (_: Exception) {
+            // Fallback: intentar con PendingIntent (más robusto en algunos OEMs)
+            try {
+                val pi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PendingIntent.getForegroundService(
+                        applicationContext,
+                        101,
+                        restartIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                } else {
+                    PendingIntent.getService(
+                        applicationContext,
+                        101,
+                        restartIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                }
+                val am = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                am?.set(
+                    AlarmManager.ELAPSED_REALTIME,
+                    SystemClock.elapsedRealtime() + 800,
+                    pi
+                )
+            } catch (_: Exception) {}
         }
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-        alarmManager?.set(
-            AlarmManager.ELAPSED_REALTIME,
-            SystemClock.elapsedRealtime() + 1000,
-            restartPendingIntent
-        )
         super.onTaskRemoved(rootIntent)
     }
 

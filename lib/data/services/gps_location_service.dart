@@ -188,6 +188,21 @@ class GpsLocationService {
     return 'Lat: ${position.latitude.toStringAsFixed(5)}, Lon: ${position.longitude.toStringAsFixed(5)}$accuracyStr';
   }
 
+  /// Verifica si ya tiene permisos suficientes para el funcionamiento continuo.
+  /// Evitamos volver a solicitar "Permitir todo el tiempo" en cada reanudación.
+  static Future<bool> hasLocationPermission() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return false;
+      if (permission == LocationPermission.always) return true;
+      if (permission == LocationPermission.whileInUse) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Comprueba y solicita permisos proactivamente al registrarse o abrir la app por primera vez
   static Future<bool> checkAndPromptLocationPermission(BuildContext context) async {
     try {
@@ -199,12 +214,14 @@ class GpsLocationService {
           _showEnableGpsDialog(context);
           return false;
         }
-        // Permiso de primer plano concedido: intentar también el de SEGUNDO PLANO
-        // ("Permitir todo el tiempo"), necesario para fijar GPS con pantalla apagada.
-        if (permission == LocationPermission.whileInUse && context.mounted) {
-          await _requestBackgroundLocation(context);
-        }
-        // Permiso ya concedido: pre-calentar GPS en segundo plano
+        // Permiso ya concedido.
+        // Si solo tiene whileInUse, no volvemos a solicitar background para evitar
+        // el bucle de re-pregunta al volver a la app (Android muestra el diálogo
+        // de "Permitir todo el tiempo" solo cuando corresponde y muchas veces lo
+        // muestra de forma persistente). Con "always" o foreground ya concedido,
+        // el servicio nativo con foregroundServiceType location funciona para
+        // lectura GPS; el requerimiento de background explícito se conserva en manifest
+        // pero evitamos re-solicitarlo en cada reanudación.
         getCurrentLocation();
         return true;
       }

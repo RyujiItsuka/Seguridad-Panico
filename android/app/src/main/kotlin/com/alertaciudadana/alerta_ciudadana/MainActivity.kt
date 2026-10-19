@@ -319,25 +319,23 @@ class MainActivity : FlutterFragmentActivity() {
                 keyCode == KeyEvent.KEYCODE_POWER) {
                 
                 val now = System.currentTimeMillis()
-                if (now - lastKeyTime > 70L) {
+                if (now - lastKeyTime > 60L) {
                     lastKeyTime = now
-                    if (physicalKeyTimestamps.isNotEmpty() && (now - physicalKeyTimestamps.last() > 2200L)) {
-                        physicalKeyTimestamps.clear()
-                    }
-                    physicalKeyTimestamps.removeAll { now - it > 4500L }
-                    physicalKeyTimestamps.add(now)
 
+                    // Misma regla que el servicio: 3+ pulsaciones rápidas y consecutivas.
+                    val reached = EmergencyForegroundService.registerRapidPowerPress(physicalKeyTimestamps, now)
                     val count = physicalKeyTimestamps.size
                     android.util.Log.i("MainActivity", "🔘 Tecla física pulsada (código $keyCode). Acumuladas: $count")
 
-                    // Vibración háptica firme ÚNICAMENTE a partir de la 3ra pulsación (3, 4, 5...)
-                    if (count >= 3) {
-                        EmergencyForegroundService.triggerConfirmedHaptic(this)
+                    if (reached) {
                         physicalKeyTimestamps.clear()
-                        android.util.Log.i("MainActivity", "⚡ DISPARO CONFIRMADO POR BOTONES FÍSICOS ($count pulsaciones)")
+                        android.util.Log.i("MainActivity", "⚡ DISPARO CONFIRMADO POR BOTONES FÍSICOS: 3+ pulsaciones rápidas")
+                        EmergencyForegroundService.triggerConfirmedHaptic(this)
                         applyLockScreenFlags(true)
                         triggerPanicFromNative("physical_button_rapid", "ROBO")
                         return true
+                    } else if (count == 2) {
+                        EmergencyForegroundService.triggerSinglePressHaptic(this)
                     }
                 }
             }
