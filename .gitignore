@@ -46,3 +46,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Artefactos locales de la CLI de Supabase (nunca versionar)
+supabase/.temp/

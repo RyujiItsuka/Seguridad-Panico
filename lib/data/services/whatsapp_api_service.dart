@@ -7,9 +7,15 @@ import 'session_service.dart';
 
 /// Servicio para el envío automatizado de alertas vía WhatsApp API
 /// con mensajes predefinidos según la categoría de emergencia y despacho directo
-/// al número oficial 976264949 sin abrir la aplicación de WhatsApp.
+/// a la Central de Video Vigilancia sin abrir la aplicación de WhatsApp.
+///
+/// El número de destino NO vive en el código: lo resuelve el servidor (Edge
+/// Function `whatsapp`) leyendo la tabla `configuracion_sistema`, por lo que
+/// puede cambiarse desde el panel web sin actualizar esta app.
 class WhatsAppApiService {
-  /// Número oficial de auxilio y despacho de la Central de Video Vigilancia (Perú)
+  /// Número por defecto de la Central de Video Vigilancia (Perú).
+  /// Solo se conserva como respaldo local y etiqueta de registro; el destino
+  /// real lo decide el servidor en cada envío.
   static const String defaultEmergencyRecipient = '+51 976264949';
   
   /// URL del backend central de despacho de emergencias
@@ -34,25 +40,35 @@ class WhatsAppApiService {
 
   /// Envía un mensaje de texto a WhatsApp a través de la Edge Function `whatsapp`.
   ///
+  /// [action]:
+  /// - `sendAlert` (por defecto): NO se envía número; el servidor resuelve el
+  ///   WhatsApp de la Central desde la configuración de la base de datos. Así,
+  ///   si la Central cambia de número basta con editarlo en el panel web
+  ///   (sección "Configuración Global") y no hay que actualizar esta app.
+  /// - `sendMessage` (requiere [chatId]): envío genérico a un número específico.
+  ///
   /// Devuelve `true` si la Edge Function respondió 2xx. Incluye timeout corto y
   /// un reintento (respaldo) para no dejar caída la ruta crítica de pánico.
   static Future<bool> sendTextViaEdge({
-    required String chatId,
     required String message,
+    String? chatId,
+    String action = 'sendAlert',
     Duration timeout = const Duration(seconds: 8),
     int attempts = 2,
   }) async {
     for (int attempt = 1; attempt <= attempts; attempt++) {
       try {
+        final body = <String, dynamic>{
+          'action': action,
+          'message': message,
+        };
+        if (chatId != null && chatId.isNotEmpty) body['chatId'] = chatId;
+
         final res = await http
             .post(
               Uri.parse(whatsappEdgeUrl),
               headers: _whatsappEdgeHeaders,
-              body: jsonEncode({
-                'action': 'sendMessage',
-                'chatId': chatId,
-                'message': message,
-              }),
+              body: jsonEncode(body),
             )
             .timeout(timeout);
         if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -266,6 +282,7 @@ class WhatsAppApiService {
   static Future<String?> sendAutomatedEmergencyAlert({
     required String category,
     String? customMessage,
+    /// Solo respaldo/local: el servidor decide el WhatsApp de la Central.
     String recipientNumber = defaultEmergencyRecipient,
     String source = 'ui_button',
     double lat = -12.04637,
@@ -308,9 +325,11 @@ class WhatsAppApiService {
           photoCount: imagePaths?.length ?? 0,
         );
 
+    // El número destino lo resuelve ahora el servidor (tabla configuracion_sistema).
+    // El parámetro se conserva solo como respaldo/local logging.
     final cleanRecipient = normalizeNumber(recipientNumber);
     developer.log(
-      'Enviando alerta directa WhatsApp API a +$cleanRecipient (Origen: $source)',
+      'Enviando alerta WhatsApp a la Central (respaldo: +$cleanRecipient, Origen: $source)',
       name: 'WhatsAppApiService',
     );
 
@@ -348,8 +367,7 @@ class WhatsAppApiService {
             final request = http.MultipartRequest('POST', Uri.parse(whatsappEdgeUrl));
             request.headers['apikey'] = supabaseAnonKey;
             request.headers['Authorization'] = 'Bearer $supabaseAnonKey';
-            request.fields['action'] = 'sendFileByUpload';
-            request.fields['chatId'] = '$cleanRecipient@c.us';
+            request.fields['action'] = 'sendAlertFile';
             request.fields['caption'] = i == 0
                 ? message
                 : '📸 Evidencia fotográfica adicional #${i + 1}';
@@ -384,11 +402,9 @@ class WhatsAppApiService {
     }
 
     // 1. Despacho a WhatsApp vía Edge Function `whatsapp` (token de Green API
-    //    SOLO en el servidor; nunca en el APK).
-    final dispatched = await sendTextViaEdge(
-      chatId: '$cleanRecipient@c.us',
-      message: message,
-    );
+    //    SOLO en el servidor; nunca en el APK). Sin número en la petición: la
+    //    función lo busca en configuracion_sistema (clave: whatsapp_central).
+    final dispatched = await sendTextViaEdge(message: message);
     if (dispatched) {
       if (dbReportId != null) {
         ReportStorageService.markReportAsSent(dbReportId);

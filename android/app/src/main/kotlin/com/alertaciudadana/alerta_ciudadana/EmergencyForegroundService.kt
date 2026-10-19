@@ -1464,12 +1464,15 @@ class EmergencyForegroundService : Service() {
                 //    El token de Green API vive SOLO en el servidor (Deno.env);
                 //    el APK solo conoce la URL de la Edge Function. Timeout
                 //    corto + reintento (respaldo) para no dejar caer la ruta crítica.
+                //    Con action="sendAlert" NO se envía ningún número: el
+                //    servidor resuelve el WhatsApp de la Central desde la
+                //    configuración (tabla configuracion_sistema), que el panel
+                //    web permite cambiar sin actualizar esta app.
                 try {
                     val anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtdHpwcmNudGVmemt2dnptaGZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODIxNzIsImV4cCI6MjEwNjM1ODE3Mn0.x18Bh68n4ZgtNOyVPwIc01V6aL50oUaXjeXELzlWEh4"
                     val fnUrl = URL("https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/whatsapp")
                     val jsonBody = JSONObject().apply {
-                        put("action", "sendMessage")
-                        put("chatId", "51976264949@c.us")
+                        put("action", "sendAlert")
                         put("message", message)
                     }.toString().toByteArray(Charsets.UTF_8)
 

@@ -21,8 +21,54 @@
 //   2) Archivo (multipart/form-data):
 //      POST /functions/v1/whatsapp
 //      Fields: action=sendFileByUpload, chatId, caption, fileName, file=<binario>
+//
+// Despacho de alertas (DESTINO CONFIGURABLE DESDE EL PANEL):
+//   - JSON:    { "action": "sendAlert", "message": "..." }
+//   - archivo: action=sendAlertFile (multipart)
+//   En estos dos casos NO se envía chatId: el servidor lo resuelve leyendo la
+//   tabla configuracion_sistema (clave = whatsapp_central). Así, si la Central
+//   cambia de número basta con editarlo en el panel web (sección "Configuración
+//   Global"): no hay que actualizar ni recompilar la app.
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+// Cliente con service_role para leer la configuración (RLS cerrado).
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ??
+  "https://emtzprcntefzkvvzmhfk.supabase.co";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const supabaseAdmin = SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+  : null;
+
+// Respaldo si la tabla aún no existe o está vacía.
+const FALLBACK_CENTRAL = Deno.env.get("EMERGENCY_RECIPIENT") ?? "51976264949";
+
+// Resuelve el WhatsApp de la Central a partir de la configuración guardada en
+// la base. Devuelve "51976264949@c.us" o null si no hay ningún número utilizable.
+async function resolveCentralChatId(): Promise<string | null> {
+  try {
+    if (supabaseAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from("configuracion_sistema")
+        .select("valor")
+        .eq("clave", "whatsapp_central")
+        .abortSignal(AbortSignal.timeout(3000))
+        .maybeSingle();
+      if (error) {
+        console.warn(`[whatsapp] No se pudo leer configuracion_sistema: ${error.message}`);
+      } else {
+        const digitos = String(data?.valor ?? "").replace(/\D/g, "");
+        if (digitos.length >= 5) return `${digitos}@c.us`;
+      }
+    }
+  } catch (e) {
+    console.warn(`[whatsapp] Error leyendo configuración: ${e}`);
+  }
+  // Respaldo: variable de entorno y, en último caso, el número por defecto.
+  const fallback = FALLBACK_CENTRAL.replace(/\D/g, "");
+  return fallback.length >= 5 ? `${fallback}@c.us` : null;
+}
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -33,7 +79,14 @@ const CORS_HEADERS: Record<string, string> = {
 
 const GREEN_API_BASE_URL = Deno.env.get("GREEN_API_BASE_URL") ??
   "https://7105.api.greenapi.com";
-const GREEN_API_INSTANCE_ID = Deno.env.get("GREEN_API_INSTANCE_ID") ?? "";
+// El id de instancia se normaliza SIN el prefijo "waInstance" (ese prefijo se
+// agrega al construir la URL). Se aceptan ambos nombres de variable de entorno
+// (GREEN_API_INSTANCE_ID o GREEN_API_ID_INSTANCE, la que usa `alerts`).
+const GREEN_API_INSTANCE_ID = (
+  Deno.env.get("GREEN_API_INSTANCE_ID") ??
+  Deno.env.get("GREEN_API_ID_INSTANCE") ??
+  ""
+).replace(/^waInstance/i, "");
 const GREEN_API_TOKEN = Deno.env.get("GREEN_API_TOKEN") ?? "";
 
 // Tiempos de espera del proveedor (ms). Se mantienen cortos para que la ruta
@@ -71,7 +124,8 @@ function isRateLimited(ip: string): boolean {
 }
 
 function greenApiUrl(action: string): string {
-  return `${GREEN_API_BASE_URL}/${GREEN_API_INSTANCE_ID}/${action}/${GREEN_API_TOKEN}`;
+  // Green API requiere el segmento "waInstance<id>" antes de la acción.
+  return `${GREEN_API_BASE_URL}/waInstance${GREEN_API_INSTANCE_ID}/${action}/${GREEN_API_TOKEN}`;
 }
 
 // Llama a Green API con timeout y un reintento ante fallo de red o 5xx.
@@ -135,10 +189,24 @@ serve(async (req: Request) => {
     // ---- 2) Archivo (fotos de evidencia) vía multipart/form-data ----
     if (contentType.includes("multipart/form-data")) {
       const form = await req.formData();
-      const chatId = String(form.get("chatId") ?? "");
+      const formAction = String(form.get("action") ?? "sendFileByUpload");
       const caption = form.get("caption");
       const fileName = form.get("fileName");
       const file = form.get("file");
+
+      if (formAction !== "sendFileByUpload" && formAction !== "sendAlertFile") {
+        return json({ error: `Acción no soportada: ${formAction}` }, 400);
+      }
+
+      // sendAlertFile: el destino lo decide el servidor (configuración).
+      let chatId = String(form.get("chatId") ?? "");
+      if (formAction === "sendAlertFile") {
+        const central = await resolveCentralChatId();
+        if (!central) {
+          return json({ error: "Número de la Central no configurado." }, 500);
+        }
+        chatId = central;
+      }
 
       if (!/^\d{5,20}@c\.us$/.test(chatId)) {
         return json({ error: "chatId inválido" }, 400);
@@ -182,12 +250,20 @@ serve(async (req: Request) => {
     }
 
     const action = String(payload.action ?? "sendMessage");
-    const chatId = String(payload.chatId ?? "");
     const message = String(payload.message ?? "");
 
-    if (action !== "sendMessage") {
+    let chatId = String(payload.chatId ?? "");
+    if (action === "sendAlert") {
+      // El número de la Central lo resuelve el servidor (configurable en panel).
+      const central = await resolveCentralChatId();
+      if (!central) {
+        return json({ error: "Número de la Central no configurado." }, 500);
+      }
+      chatId = central;
+    } else if (action !== "sendMessage") {
       return json({ error: `Acción no soportada: ${action}` }, 400);
     }
+
     if (!/^\d{5,20}@c\.us$/.test(chatId)) {
       return json({ error: "chatId inválido" }, 400);
     }
