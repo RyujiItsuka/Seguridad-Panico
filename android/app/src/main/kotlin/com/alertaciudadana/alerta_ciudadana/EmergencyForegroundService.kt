@@ -253,23 +253,8 @@ class EmergencyForegroundService : Service() {
             return false
         }
 
-        fun triggerSinglePressHaptic(context: Context) {
-            try {
-                val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
-                    vibratorManager?.defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator?.vibrate(VibrationEffect.createOneShot(45, VibrationEffect.DEFAULT_AMPLITUDE))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator?.vibrate(45L)
-                }
-            } catch (_: Exception) {}
-        }
+        // Nota: se eliminó el háptico intermedio (1ª/2ª pulsación) a propósito: solo debe
+        // vibrar al confirmar el gesto de 3+ pulsaciones (triggerConfirmedHaptic).
 
         fun triggerConfirmedHaptic(context: Context) {
             try {
@@ -626,10 +611,10 @@ class EmergencyForegroundService : Service() {
                     android.util.Log.i("EmergencyService", "⚡ DISPARO CONFIRMADO: 3+ pulsaciones rápidas del botón de encendido")
                     triggerConfirmedHaptic(this@EmergencyForegroundService)
                     onRapidPowerPressDetected()
-                } else if (currentCount == 2) {
-                    // Feedback intermedio: quien pulsa "asustado" siente que la secuencia avanza.
-                    triggerSinglePressHaptic(this@EmergencyForegroundService)
                 }
+                // Sin háptico intermedio: NO vibrar en la 1ª ni 2ª pulsación (puede confundir
+                // a las personas creyendo que la alarma ya se activó). Solo vibra al completar
+                // el gesto de 3+ pulsaciones.
             }
         }
 

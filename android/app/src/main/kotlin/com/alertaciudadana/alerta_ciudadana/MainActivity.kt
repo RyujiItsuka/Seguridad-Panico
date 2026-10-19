@@ -314,10 +314,12 @@ class MainActivity : FlutterFragmentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val keyCode = event.keyCode
-            if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || 
-                keyCode == KeyEvent.KEYCODE_VOLUME_UP || 
-                keyCode == KeyEvent.KEYCODE_POWER) {
-                
+            // Solo volumen: la pulsación de ENCENDIDO ya es contada por el receptor de
+            // pantalla del servicio (SCREEN_ON/SCREEN_OFF). Contarla aquí también la
+            // duplicaba y hacía vibrar a la 1ª pulsación.
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+                keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+
                 val now = System.currentTimeMillis()
                 if (now - lastKeyTime > 60L) {
                     lastKeyTime = now
@@ -334,9 +336,9 @@ class MainActivity : FlutterFragmentActivity() {
                         applyLockScreenFlags(true)
                         triggerPanicFromNative("physical_button_rapid", "ROBO")
                         return true
-                    } else if (count == 2) {
-                        EmergencyForegroundService.triggerSinglePressHaptic(this)
                     }
+                    // Sin háptico intermedio: NO vibrar en la 1ª ni 2ª pulsación para no
+                    // confundir a las personas. Solo vibra al completar el gesto (3+).
                 }
             }
         }
