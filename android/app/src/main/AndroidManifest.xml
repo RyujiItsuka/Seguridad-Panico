@@ -90,5 +90,13 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Visibilidad de paquete para abrir WhatsApp directamente con el
+             enlace wa.me desde la pantalla de Ayuda (canal de contacto del
+             ciudadano con la Central). Android 11+ exige declarar los intents
+             que la app necesita resolver en otras aplicaciones. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
     </queries>
 </manifest>

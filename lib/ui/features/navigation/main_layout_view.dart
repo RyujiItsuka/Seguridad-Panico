@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../home/home_view.dart';
 import '../reports/new_report_view.dart';
 import '../auth/login_view.dart';
+import '../help/help_view.dart';
 import '../../../data/services/session_service.dart';
 import '../../../data/services/report_storage_service.dart';
 import '../../../data/services/auth_service.dart';
@@ -787,6 +788,18 @@ class _ProfileViewState extends State<_ProfileView> {
                       ),
                     ),
                   const SizedBox(height: 32),
+                  // Acceso a la ayuda y preguntas frecuentes del ciudadano.
+                  _buildProfileTile(
+                    Icons.help_outline_rounded,
+                    'Ayuda y Soporte',
+                    'Preguntas frecuentes y contacto con la Central',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const HelpView()),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 20),
                   OutlinedButton.icon(
                     onPressed: () async {
                       await SessionService.clearSession();
