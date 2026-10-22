@@ -148,6 +148,15 @@ class AppLockService {
       return;
     }
 
+    // Si la sesión fue revocada en el servidor (robo o exposición de tokens),
+    // cerrar la sesión local y no exigir PIN: el usuario debe volver a entrar.
+    if (!await SessionService.isSessionValidOnServer()) {
+      isLockedNotifier.value = false;
+      _cancelInactivityTimer();
+      _isLoggedIn = false;
+      return;
+    }
+
     if (_pausedAt != null) {
       final elapsed = DateTime.now().difference(_pausedAt!);
       developer.log('App reanudada tras ${elapsed.inSeconds}s en segundo plano (umbral: ${backgroundLockThreshold.inSeconds}s)', name: 'AppLockService');

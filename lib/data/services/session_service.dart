@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app_lock_service.dart';
 import 'hardware_trigger_service.dart';
+import 'whatsapp_api_service.dart';
 
 /// Servicio para persistencia segura de sesión de usuario y PIN secreto en almacenamiento seguro
 /// Cumple con: HU-SEG-02 (flutter_secure_storage / Keychain & Keystore)
@@ -95,6 +98,57 @@ class SessionService {
     } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_keyJwtToken);
+  }
+
+  // ===========================================================================
+  // VALIDACIÓN DE LA SESIÓN CONTRA EL SERVIDOR
+  // ---------------------------------------------------------------------------
+  // La bandera local (isLoggedIn) no puede saber si el servidor revocó la
+  // sesión (por robo o por exposición de tokens). Este método consulta la Edge
+  // Function `security` (acción `verify-token`) para confirmar que el token
+  // sigue vigente. Si la sesión fue revocada, se limpia la sesión local y se
+  // devuelve false, de modo que la app vuelve al inicio de sesión.
+  // ===========================================================================
+  static const String _supabaseUrl = 'https://emtzprcntefzkvvzmhfk.supabase.co';
+  static const String _securityFunctionUrl = '$_supabaseUrl/functions/v1/security';
+
+  /// Devuelve true sólo si el token actual sigue siendo válido en el servidor.
+  /// Ante cualquier error de red devuelve true (no se cierra sesión por falta
+  /// de conexión); sólo cierra cuando el servidor responde que fue revocado.
+  static Future<bool> isSessionValidOnServer() async {
+    final token = await getJwtToken();
+    if (token == null || token.trim().isEmpty) return false;
+
+    try {
+      final resp = await http.post(
+        Uri.parse(_securityFunctionUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': WhatsAppApiService.supabaseAnonKey,
+          'Authorization': 'Bearer ${WhatsAppApiService.supabaseAnonKey}',
+        },
+        body: jsonEncode({'action': 'verify-token', 'token': token}),
+      ).timeout(const Duration(seconds: 8));
+
+      // El servidor responde 403 cuando la sesión fue revocada y 401 cuando el
+      // token es inválido o expiró. En ambos casos la sesión local debe cerrarse.
+      if (resp.statusCode == 403 || resp.statusCode == 401) {
+        await clearSession();
+        return false;
+      }
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        if (data['valid'] == false) {
+          await clearSession();
+          return false;
+        }
+        return true;
+      }
+    } catch (_) {
+      // Sin red o error transitorio: no se cierra la sesión por precaución.
+      return true;
+    }
+    return true;
   }
 
   /// Obtiene el PIN secreto registrado (si no se guardó, usa los primeros 4 dígitos del DNI)

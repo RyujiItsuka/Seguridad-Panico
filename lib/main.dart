@@ -11,7 +11,13 @@ final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final loggedIn = await SessionService.isLoggedIn();
+  var loggedIn = await SessionService.isLoggedIn();
+  // Si hay una sesión local, confirmar contra el servidor que no fue revocada
+  // (por reporte de robo o por exposición de tokens). Si el servidor dice que
+  // ya no es válida, isSessionValidOnServer() limpia la sesión y devuelve false.
+  if (loggedIn) {
+    loggedIn = await SessionService.isSessionValidOnServer();
+  }
   await AppLockService().initOnLaunch(isLoggedIn: loggedIn);
   runApp(AlertaCiudadanaApp(isLoggedIn: loggedIn));
 }
