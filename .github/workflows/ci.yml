@@ -1,0 +1,46 @@
+name: CI
+
+# Control de cambios — verificación automática.
+# Se ejecuta en cada pull request y en cada push a main.
+# Objetivo: que ningún cambio llegue a main sin pasar el análisis estático
+# y las pruebas unitarias/de widgets.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancela ejecuciones anteriores del mismo PR cuando se sube un cambio nuevo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze-and-test:
+    name: Analizar y probar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Flutter (canal stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolver dependencias
+        run: flutter pub get
+
+      - name: Analizar el código
+        run: flutter analyze
+
+      # Se excluye la etiqueta `e2e`: esas pruebas consultan la Edge Function
+      # `reniec` por internet y dependen del entorno desplegado, por lo que no
+      # son apropiadas para un runner de integración. Se ejecutan a mano.
+      - name: Ejecutar pruebas
+        run: flutter test --exclude-tags e2e

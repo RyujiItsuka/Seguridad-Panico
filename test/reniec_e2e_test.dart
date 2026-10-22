@@ -1,8 +1,15 @@
+@Tags(['e2e'])
+library;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:alerta_ciudadana/data/services/reniec_service.dart';
 
 /// Prueba end-to-end contra la Edge Function `reniec` desplegada en Supabase.
 /// Requiere conexión a internet.
+///
+/// Está etiquetada como `e2e`: NO se ejecuta en integración continua, porque
+/// depende de la red y del entorno desplegado. Para correrla localmente:
+///   flutter test --tags e2e
 void main() {
   test(
     'consulta real a la Edge Function reniec y contraste ciego',

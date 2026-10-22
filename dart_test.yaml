@@ -1,0 +1,10 @@
+# Configuración de las pruebas de Dart/Flutter.
+#
+# Etiquetas:
+#   e2e  Pruebas que salen a internet o dependen del entorno desplegado
+#        (por ejemplo, la consulta real a la Edge Function `reniec`).
+#        Se excluyen en integración continua y se ejecutan a mano:
+#          flutter test --tags e2e
+tags:
+  e2e:
+    skip: false
