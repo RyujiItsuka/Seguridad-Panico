@@ -14,13 +14,15 @@ protección de rama impiden que un cambio llegue a producción sin pasar por aqu
 
 | Rama | Para qué sirve | ¿Admite push directo? |
 |---|---|---|
-| `main` | Versión estable / APK entregable. Solo recibe merges desde `develop`. | No (bloqueado) |
-| `develop` | Integración continua del trabajo del sprint. | No (bloqueado) |
-| `feature/<id>-<descripcion>` | Un cambio concreto (una historia o tarea). | Sí, es de trabajo |
+| `main` | Versión estable / APK entregable. Solo recibe merges desde `desarrollo`. | No (bloqueado) |
+| `desarrollo` | Integración continua del trabajo del sprint. | No (bloqueado) |
+| `cambio/<id>-<descripcion>` | Un cambio concreto (una historia o tarea). | Sí, es de trabajo |
 | `hotfix/<id>-<descripcion>` | Corrección urgente que nace de `main`. | Sí, es de trabajo |
 
 Regla de oro: **un cambio = una solicitud = una rama = un pull request**.
-Ningún cambio se escribe directamente sobre `main` ni sobre `develop`.
+Ningún cambio se escribe directamente sobre `main` ni sobre `desarrollo`.
+
+> **Nota histórica.** Los pull requests anteriores a octubre de 2026 aparecen con la base `develop`, que era el nombre de la rama de integración antes de adoptar `desarrollo`. El contenido y las reglas son exactamente los mismos.
 
 Remotos del repositorio local:
 
@@ -35,15 +37,15 @@ Remotos del repositorio local:
 
 1. **Solicitud.** Se registra el cambio (plantilla de solicitud del plan) y se
    abre/usa el issue del sprint con su etiqueta de prioridad.
-2. **Rama.** Se crea desde `develop`:
-   `git checkout develop && git pull && git checkout -b feature/S6-xx-descripcion`
+2. **Rama.** Se crea desde `desarrollo`:
+   `git checkout desarrollo && git pull && git checkout -b cambio/S6-xx-descripcion`
 3. **Desarrollo.** Commits pequeños con la convención de la sección 5.
-4. **Push de la rama.** `git push -u origin feature/S6-xx-descripcion`
-5. **Pull request a `develop`.** El PR describe qué cambia, por qué, cómo se
+4. **Push de la rama.** `git push -u origin cambio/S6-xx-descripcion`
+5. **Pull request a `desarrollo`.** El PR describe qué cambia, por qué, cómo se
    probó y cómo se revierte. El CI corre automáticamente.
 6. **Revisión.** El PR se aprueba y se fusiona solo con el CI en verde.
-7. **Integración a `main`.** Cuando `develop` está estable se abre un PR
-   `develop` → `main` (requiere revisión) y se fusiona.
+7. **Integración a `main`.** Cuando `desarrollo` está estable se abre un PR
+   `desarrollo` → `main` (requiere revisión) y se fusiona.
 8. **Cierre.** Se cierra el issue, se compila el APK release de esa versión y se
    actualiza el manifiesto SHA-256 del paquete de entrega.
 
@@ -51,7 +53,7 @@ Remotos del repositorio local:
 
 - Antes del merge: se cierra el PR (no deja rastro en `main`).
 - Después del merge: `git revert <commit>` en una rama `hotfix/...` y PR a
-  `main` y `develop`. Nunca se reescribe el historial (`--force`) en ramas
+  `main` y `desarrollo`. Nunca se reescribe el historial (`--force`) en ramas
   protegidas.
 - APK: se vuelve a compilar desde el commit anterior; el manifiesto SHA-256
   identifica sin ambigüedad el binario válido del entregable.
@@ -60,7 +62,7 @@ Remotos del repositorio local:
 
 ## 3. Protección de rama configurada
 
-| Regla | `main` | `develop` |
+| Regla | `main` | `desarrollo` |
 |---|---|---|
 | Cambios solo por pull request | Sí | Sí |
 | Revisión obligatoria | 1 aprobación | No |
@@ -94,7 +96,7 @@ Archivo: `.github/workflows/ci.yml`
 |---|---|
 | Workflow | `CI` |
 | Job | `Analizar y probar` |
-| Se ejecuta en | `pull_request` y `push` a `main` y `develop` |
+| Se ejecuta en | `pull_request` y `push` a `main` y `desarrollo` |
 | Qué valida | `flutter pub get` + `flutter analyze` + `flutter test --exclude-tags e2e` |
 | Efecto | Si falla, el PR queda bloqueado y no se puede fusionar |
 
