@@ -1,8 +1,8 @@
 # Guía de ramas, control de cambios e integración continua
 
 Proyecto: **Alerta Ciudadana — Aplicación móvil (Flutter + Kotlin nativo)**
-Repositorio: `RyujiItsuka/Seguridad-Panico` (fork mantenido por el equipo;
-el repositorio original es `titinashe123/Seguridad-Panico`)
+Repositorio: `RyujiItsuka/Seguridad-Panico` (repositorio oficial del proyecto y de
+la entrega)
 
 Esta guía describe cómo se aplica el procedimiento de control de cambios de la
 Semana 11 en este repositorio. Es de cumplimiento obligatorio: el pipeline y la
@@ -26,8 +26,8 @@ Remotos del repositorio local:
 
 | Remoto | URL | Uso |
 |---|---|---|
-| `origin` | `RyujiItsuka/Seguridad-Panico` | Repositorio de trabajo (aquí se abren los PR) |
-| `upstream` | `titinashe123/Seguridad-Panico` | Repositorio original del equipo (solo lectura / sincronización) |
+| `origin` | `RyujiItsuka/Seguridad-Panico` | Repositorio oficial: aquí se trabaja y se abren los pull requests |
+| `upstream` | `titinashe123/Seguridad-Panico` | Repositorio de origen histórico (solo lectura, referencia) |
 
 ---
 
@@ -77,10 +77,12 @@ cuenta administradora conserva la capacidad de fusionar. En cuanto se incorpore
 un segundo revisor con permisos, se activa la opción *"Do not allow bypassing
 the above settings"* y la regla pasa a ser total.
 
-**Nota sobre el repositorio original:** en `titinashe123/Seguridad-Panico` la
-cuenta del equipo no tiene permisos de administración, por lo que la protección
-de rama no se puede configurar allí. Por eso el flujo se aplica en el fork, y el
-cambio se propone al original mediante pull request cuando corresponda.
+**Repositorio oficial:** el repositorio de trabajo y de entrega es
+`RyujiItsuka/Seguridad-Panico`, donde están activas la protección de rama y la
+verificación automática descritas en esta guía. El repositorio
+`titinashe123/Seguridad-Panico` conserva la versión anterior del proyecto y se
+mantiene únicamente como referencia histórica; no recibe cambios ni forma parte
+del flujo de integración.
 
 ---
 
