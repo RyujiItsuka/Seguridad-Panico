@@ -1,15 +1,15 @@
 name: CI
 
 # Control de cambios — verificación automática.
-# Se ejecuta en cada pull request y en cada push a main y a develop.
+# Se ejecuta en cada pull request y en cada push a main y a desarrollo.
 # Objetivo: que ningún cambio llegue a la rama de integración ni a main sin
 # pasar el análisis estático y las pruebas unitarias/de widgets. Con la
 # protección de rama activa, un job en rojo bloquea el merge del pull request.
 on:
   push:
-    branches: [main, develop]
+    branches: [main, desarrollo]
   pull_request:
-    branches: [main, develop]
+    branches: [main, desarrollo]
   workflow_dispatch:
 
 # Cancela ejecuciones anteriores del mismo PR cuando se sube un cambio nuevo.

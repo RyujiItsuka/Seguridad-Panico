@@ -27,13 +27,13 @@ llama a una Edge Function y es el servidor quien despacha la alerta.
 
 ## Control de cambios e integración continua
 
-El proyecto trabaja con el modelo `main` / `develop` / `feature/*`, con pull
+El proyecto trabaja con el modelo `main` / `desarrollo` / `cambio/*`, con pull
 requests obligatorios y verificación automática antes de fusionar. El detalle
 está en [`docs/GUIA-RAMAS-Y-CI.md`](docs/GUIA-RAMAS-Y-CI.md).
 
 El pipeline (`.github/workflows/ci.yml`, tarea **Analizar y probar**) ejecuta
 `flutter analyze` y `flutter test` en cada pull request y en cada envío a `main`
-y `develop`. Las pruebas etiquetadas `e2e` se ejecutan a mano porque dependen del
+y `desarrollo`. Las pruebas etiquetadas `e2e` se ejecutan a mano porque dependen del
 entorno desplegado.
 
 ## Requisitos
