@@ -23,16 +23,12 @@ class _Faq {
 /// atendidas: ubicación, alerta no despachada, gesto que no se detecta,
 /// falsos positivos, app cerrada por el sistema y consumo de batería.
 ///
-/// Al final ofrece el contacto humano por WhatsApp, que es el canal real del
-/// ciudadano: la app NO abre un portal de tickets (el ciudadano no usa Jira).
+/// Al final ofrece acceso al portal web de soporte al ciudadano.
 class HelpView extends StatelessWidget {
   const HelpView({super.key});
 
-  /// Número de la Central de Video Vigilancia (Perú).
-  ///
-  /// Se usa para el canal HUMANO de consulta del ciudadano. No es el número de
-  /// despacho de alertas: ese lo resuelve el servidor al enviar la alerta.
-  static const String _numeroCentral = '51976264949';
+  static const String _soporteWebUrl =
+      'https://utp-teamsoc-yli1f0tw.atlassian.net/servicedesk/customer/portal/1';
 
   static const List<_Faq> _preguntas = [
     _Faq(
@@ -105,15 +101,9 @@ class HelpView extends StatelessWidget {
     ),
   ];
 
-  /// Abre WhatsApp con el número de la Central.
-  ///
-  /// Es el canal humano real del ciudadano. Se usa `wa.me` para que abra la app
-  /// de WhatsApp ya instalada, con el mensaje de consulta precargado.
-  Future<void> _contactarCentral(BuildContext context) async {
-    final uri = Uri.parse(
-      'https://wa.me/$_numeroCentral'
-      '?text=${Uri.encodeComponent('Hola, necesito ayuda con la app Alerta Pisco.')}',
-    );
+  /// Abre el portal de soporte en el navegador externo.
+  Future<void> _abrirSoporteWeb(BuildContext context) async {
+    final uri = Uri.parse(_soporteWebUrl);
     try {
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!ok && context.mounted) {
@@ -128,7 +118,7 @@ class HelpView extends StatelessWidget {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'No se pudo abrir WhatsApp. Marca al +51 976 264 949.',
+          'No se pudo abrir el soporte web. Revisa tu navegador e inténtalo de nuevo.',
           style: GoogleFonts.inter(color: Colors.white, fontWeight: FontWeight.w600),
         ),
         backgroundColor: AppColors.surfaceElevated,
@@ -192,7 +182,7 @@ class HelpView extends StatelessWidget {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        'Revisa las respuestas más comunes. Si no encuentras tu caso, escríbenos por WhatsApp.',
+                        'Revisa las respuestas más comunes. Si no encuentras tu caso, visita nuestro soporte web.',
                         style: GoogleFonts.inter(fontSize: 12, color: AppColors.textSecondary),
                       ),
                     ],
@@ -218,7 +208,7 @@ class HelpView extends StatelessWidget {
 
           const SizedBox(height: 20),
 
-          // Contacto humano
+          // Acceso al soporte web
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -247,15 +237,15 @@ class HelpView extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Contacta a la Central de Video Vigilancia. Atendemos consultas sobre el uso de la app las 24 horas.',
+                  'Visita nuestro portal de soporte web para obtener más información y enviar consultas sobre el uso de la app.',
                   style: GoogleFonts.inter(fontSize: 12, color: AppColors.textSecondary),
                 ),
                 const SizedBox(height: 14),
                 ElevatedButton.icon(
-                  onPressed: () => _contactarCentral(context),
-                  icon: const Icon(Icons.chat_rounded, size: 18),
+                  onPressed: () => _abrirSoporteWeb(context),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 18),
                   label: Text(
-                    'ESCRIBIR POR WHATSAPP',
+                    'Soporte Web',
                     style: GoogleFonts.inter(fontWeight: FontWeight.w800, letterSpacing: 0.5),
                   ),
                   style: ElevatedButton.styleFrom(
@@ -263,32 +253,6 @@ class HelpView extends StatelessWidget {
                     foregroundColor: Colors.white,
                     minimumSize: const Size.fromHeight(48),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                // Aviso importante: este canal es para consultas, no para urgencias.
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: AppColors.primaryRed.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppColors.primaryRed.withValues(alpha: 0.35)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.warning_amber_rounded, color: AppColors.primaryRed, size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Para una emergencia real, usa el botón de pánico, no este chat.',
-                          style: GoogleFonts.inter(
-                            fontSize: 11.5,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
                   ),
                 ),
               ],
