@@ -1187,11 +1187,7 @@ class EmergencyForegroundService : Service() {
         val isDeviceLocked = keyguardManager?.isKeyguardLocked ?: false
 
         val smallIcon = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_lock_idle_alarm
-        val title = if (alertType == "ACCIDENTE") {
-            "🚗 ¡ACCIDENTE DETECTADO! ($secondsLeft seg)"
-        } else {
-            "🚨 ¡ALERTA DE ROBO ACTIVADA! ($secondsLeft seg)"
-        }
+        val title = "🚨 ¡ALERTA DE $alertType ACTIVADA! ($secondsLeft seg)"
         val text = "Despachando alerta en $secondsLeft segundos. Toca para ingresar PIN y cancelar."
 
         val builder = NotificationCompat.Builder(this, EMERGENCY_ALARM_CHANNEL_ID)
@@ -1413,10 +1409,24 @@ class EmergencyForegroundService : Service() {
                     3
                 }
 
-                val headline = if (alertType == "ACCIDENTE") {
-                    "🚗💥 ¡ACCIDENTE DE TRÁNSITO! AMBULANCIA Y POLICÍA REQUERIDA 🚗💥"
-                } else {
-                    "🚨 ¡AUXILIO! ME ESTÁN ROBANDO 🚨"
+                val headline = when (alertType) {
+                    "ROBO" -> "🚨 ¡AUXILIO! ME ESTÁN ROBANDO 🚨"
+                    "ACCIDENTE" -> "🚗💥 ¡ACCIDENTE DE TRÁNSITO! AMBULANCIA Y POLICÍA REQUERIDA 🚗💥"
+                    "SECUESTRO" -> "🛑 ¡ALERTA MÁXIMA: POSIBLE SECUESTRO EN CURSO! INTERVENCIÓN POLICIAL INMEDIATA 🛑"
+                    "INCENDIO" -> "🔥 ¡ALERTA DE INCENDIO! UNIDAD DE BOMBEROS REQUERIDA 🔥"
+                    "GRESCA" -> "🥊 ¡ALTERCADO / GRESCA EN VÍA PÚBLICA! PATRULLAJE URGENTE 🥊"
+                    "ASESINATO" -> "🛑 ¡ALERTA CRÍTICA: ATENTADO / ASESINATO! INTERVENCIÓN INMEDIATA 🛑"
+                    "PERSONALIZADO" -> "⚠️ ¡ALERTA DE SEGURIDAD CIUDADANA! ⚠️"
+                    else -> "🚨 ¡ALERTA DE EMERGENCIA CIUDADANA: $alertType! 🚨"
+                }
+                val incidentTypeId = when (alertType) {
+                    "ROBO" -> 1
+                    "ACCIDENTE" -> 2
+                    "INCENDIO" -> 3
+                    "GRESCA" -> 4
+                    "ASESINATO" -> 5
+                    "SECUESTRO" -> 6
+                    else -> 7
                 }
                 val triggerLabel = when (source) {
                     "power_button_rapid", "power_button_3x" -> "BOTÓN DE ENCENDIDO (3+ PULSACIONES RÁPIDAS SEGUIDAS) [MODO BOLSILLO / APP CERRADA]"
@@ -1424,7 +1434,7 @@ class EmergencyForegroundService : Service() {
                     "sensor_antirrobo_giroscopio" -> "SENSOR ANTIRROBO (FORCEJEO BRUSCO / GIROSCOPIO)"
                     "sensor_antirrobo" -> "SENSOR ANTIRROBO (DETECCIÓN DE ROBO EN SEGUNDO PLANO)"
                     "physical_button_3x", "physical_button_rapid" -> "BOTÓN FÍSICO RÁPIDO (3+ PULSACIONES SEGUIDAS) [ROBO]"
-                    else -> "DETECCIÓN AUTOMÁTICA DE ROBO (FONDO)"
+                    else -> source
                 }
                 val latStr = String.format(Locale.US, "%.5f", lat)
                 val lonStr = String.format(Locale.US, "%.5f", lon)
@@ -1536,7 +1546,7 @@ class EmergencyForegroundService : Service() {
 
                     val sBody = JSONObject().apply {
                         put("id_persona", idPersona)
-                        put("id_tipo", if (alertType == "ACCIDENTE") 2 else 1)
+                        put("id_tipo", incidentTypeId)
                         put("id_estado", 1)
                         put("fecha_hora", nowUtcIso)
                         put("descripcion", message)
@@ -1583,7 +1593,7 @@ class EmergencyForegroundService : Service() {
 
                     val reportRecord = JSONObject().apply {
                         put("id_reporte", createdReportId ?: System.currentTimeMillis())
-                        put("id_tipo", if (alertType == "ACCIDENTE") 2 else 1)
+                        put("id_tipo", incidentTypeId)
                         put("tipo_incidencia", JSONObject().apply {
                             put("nombre", alertType)
                         })
