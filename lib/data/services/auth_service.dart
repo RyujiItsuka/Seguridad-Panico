@@ -21,6 +21,12 @@ class AuthResult {
 /// Servicio de Autenticación y Seguridad (Sprint 4)
 /// Cumple con: HU-SEG-01 (OTP WhatsApp), HU-SEG-02 (JWT Keystore), HU-SEG-06 (Bcrypt)
 class AuthService {
+  /// send-otp guarda el código y espera la confirmación de WhatsApp. La función
+  /// "whatsapp" reintenta una vez (2 x 8 s) y "security" corta a los 18 s, así
+  /// que la app debe esperar más que eso para no mostrar un error de red
+  /// cuando el código sí llega.
+  static const Duration _sendOtpTimeout = Duration(seconds: 25);
+
   static const String _supabaseUrl = 'https://emtzprcntefzkvvzmhfk.supabase.co';
   static const String _securityFunctionUrl = '$_supabaseUrl/functions/v1/security';
   static const String _anonKey = WhatsAppApiService.supabaseAnonKey;
@@ -53,7 +59,8 @@ class AuthService {
               'phone': cleanPhone,
             }),
           )
-          .timeout(const Duration(seconds: 8));
+          // send-otp espera a WhatsApp (hasta ~18 s en el servidor).
+          .timeout(_sendOtpTimeout);
 
       if (response.statusCode == 200) {
         return AuthResult(success: true);
@@ -356,7 +363,8 @@ class AuthService {
               'phone': cleanPhone,
             }),
           )
-          .timeout(const Duration(seconds: 8));
+          // send-otp espera a WhatsApp (hasta ~18 s en el servidor).
+          .timeout(_sendOtpTimeout);
 
       if (response.statusCode == 200) {
         return AuthResult(success: true);
