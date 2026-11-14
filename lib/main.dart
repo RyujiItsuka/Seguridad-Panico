@@ -18,6 +18,11 @@ void main() async {
   if (loggedIn) {
     loggedIn = await SessionService.isSessionValidOnServer();
   }
+  if (loggedIn) {
+    // Migra el PIN en claro de versiones anteriores y entrega el token al
+    // servicio nativo de emergencias (almacén cifrado con Keystore).
+    await SessionService.syncSecureState();
+  }
   await AppLockService().initOnLaunch(isLoggedIn: loggedIn);
   runApp(AlertaCiudadanaApp(isLoggedIn: loggedIn));
 }

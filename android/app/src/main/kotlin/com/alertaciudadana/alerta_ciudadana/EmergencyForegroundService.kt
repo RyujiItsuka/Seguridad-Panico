@@ -178,11 +178,12 @@ class EmergencyForegroundService : Service() {
 
                 val dni = prefs.getString("flutter.app_session_user_dni", "") ?: ""
                 val lastDni = prefs.getString("flutter.app_last_used_dni", "") ?: ""
-                val token = prefs.getString("flutter.app_session_jwt_token", "") ?: ""
-                val pin = prefs.getString("flutter.app_session_secret_pin", "") ?: ""
+                // El token ya no está en SharedPreferences: lo guarda cifrado
+                // SecureSessionStore. El PIN tampoco se guarda en claro.
+                val hasToken = SecureSessionStore.hasToken(context)
                 val idPersona = prefs.getInt("flutter.app_session_user_id_persona", -1)
 
-                if (dni.isNotEmpty() || lastDni.isNotEmpty() || token.isNotEmpty() || pin.isNotEmpty() || idPersona > 0) {
+                if (dni.isNotEmpty() || lastDni.isNotEmpty() || hasToken || idPersona > 0) {
                     return true
                 }
 

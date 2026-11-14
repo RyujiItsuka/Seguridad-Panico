@@ -250,6 +250,20 @@ class MainActivity : FlutterFragmentActivity() {
                 "isNativeActive" -> {
                     result.success(true)
                 }
+                // Token del ciudadano para el servicio nativo (cifrado con Keystore).
+                "setSessionToken" -> {
+                    val token = call.argument<String>("token")?.trim().orEmpty()
+                    if (token.isEmpty()) {
+                        SecureSessionStore.clear(applicationContext)
+                        result.success(false)
+                    } else {
+                        result.success(SecureSessionStore.saveToken(applicationContext, token))
+                    }
+                }
+                "clearSessionToken" -> {
+                    SecureSessionStore.clear(applicationContext)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
