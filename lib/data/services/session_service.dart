@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,6 +23,45 @@ class SessionService {
   static const String _keyJwtToken = 'app_session_jwt_token';
   static const String _keyUserIdPersona = 'app_session_user_id_persona';
   static const String _keyLastDni = 'app_last_used_dni';
+
+  // Canal con la capa nativa: el servicio de emergencias (Kotlin) no puede
+  // leer flutter_secure_storage, así que se le entrega el token y lo guarda
+  // cifrado con el Android Keystore (SecureSessionStore.kt).
+  static const MethodChannel _nativeChannel = MethodChannel('com.alertaciudadana/hardware_trigger');
+
+  static Future<void> _pushTokenToNative(String? token) async {
+    try {
+      if (token != null && token.trim().isNotEmpty) {
+        await _nativeChannel.invokeMethod('setSessionToken', {'token': token.trim()});
+      } else {
+        await _nativeChannel.invokeMethod('clearSessionToken');
+      }
+    } catch (_) {
+      // Plataforma sin implementación nativa (p. ej. pruebas): se ignora.
+    }
+  }
+
+  /// Al arrancar con sesión: migra el PIN que versiones anteriores guardaban
+  /// en texto plano, elimina restos en claro y entrega el token al servicio
+  /// nativo (sesiones iniciadas antes de esta versión).
+  static Future<void> syncSecureState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final plainPin = prefs.getString(_keySecretPin);
+    if (plainPin != null) {
+      try {
+        final securePin = await _secureStorage.read(key: _keySecretPin);
+        if ((securePin == null || securePin.trim().isEmpty) && plainPin.trim().length == 4) {
+          await _secureStorage.write(key: _keySecretPin, value: plainPin.trim());
+        }
+        await prefs.remove(_keySecretPin);
+      } catch (_) {
+        // Si el almacenamiento seguro falla no se borra el PIN en claro,
+        // para no dejar al usuario sin poder desbloquear.
+      }
+    }
+    await prefs.remove(_keyJwtToken);
+    await _pushTokenToNative(await getJwtToken());
+  }
 
   /// Guarda la sesión del ciudadano en almacenamiento seguro encriptado
   static Future<void> saveSession({
@@ -53,9 +93,9 @@ class SessionService {
       await _secureStorage.write(key: _keyUserDni, value: dni);
     } catch (_) {}
 
-    if (secretPin != null && secretPin.trim().isNotEmpty) {
-      await prefs.setString(_keySecretPin, secretPin.trim());
-    }
+    // El PIN ya no se guarda en SharedPreferences (texto plano).
+    await prefs.remove(_keySecretPin);
+    await _pushTokenToNative(jwtToken);
   }
 
   /// Obtiene el ID de persona registrado en la base de datos
@@ -158,8 +198,16 @@ class SessionService {
       if (securePin != null && securePin.trim().isNotEmpty) return securePin.trim();
     } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
+    // Compatibilidad: PIN guardado en claro por versiones anteriores. Se migra
+    // al almacenamiento seguro y se elimina de SharedPreferences.
     final savedPin = prefs.getString(_keySecretPin);
-    if (savedPin != null && savedPin.trim().isNotEmpty) return savedPin.trim();
+    if (savedPin != null && savedPin.trim().isNotEmpty) {
+      try {
+        await _secureStorage.write(key: _keySecretPin, value: savedPin.trim());
+        await prefs.remove(_keySecretPin);
+      } catch (_) {}
+      return savedPin.trim();
+    }
 
     // Si no se guardó un PIN explícito, los primeros 4 dígitos del DNI del ciudadano logueado
     final dni = prefs.getString(_keyUserDni) ?? '';
@@ -174,10 +222,12 @@ class SessionService {
     final cleanPin = newPin.trim();
     if (cleanPin.length != 4) return;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keySecretPin, cleanPin);
     try {
       await _secureStorage.write(key: _keySecretPin, value: cleanPin);
-    } catch (_) {}
+      await prefs.remove(_keySecretPin);
+    } catch (_) {
+      // Sin almacenamiento seguro disponible no se guarda en claro.
+    }
   }
 
   /// Valida si el PIN ingresado coincide con el PIN secreto registrado
@@ -225,6 +275,7 @@ class SessionService {
     try {
       await _secureStorage.deleteAll();
     } catch (_) {}
+    await _pushTokenToNative(null);
 
     try {
       await prefs.setBool(_keyIsLoggedIn, false);
